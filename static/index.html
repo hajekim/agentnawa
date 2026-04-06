@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Directory - Manage AI Agents</title>
+    <meta name="description" content="Agent Designer를 이용해 생성한 Low Code Agent가 보입니다. 가장 마음에 드는 Agent에 좋아요를 눌러주세요.">
+    <link rel="stylesheet" href="/static/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <div class="header-left">
+                <h1>Agent Directory</h1>
+                <p>Agent Designer를 이용해 생성한 Low Code Agent가 보입니다. 가장 마음에 드는 Agent에 좋아요를 눌러주세요.</p>
+            </div>
+            <div class="header-right">
+                <button class="btn btn-secondary">Sort by: Recent</button>
+                <button class="btn btn-secondary"><i class="fas fa-filter"></i> Filters</button>
+            </div>
+        </header>
+
+        <main class="grid" id="agent-grid">
+            <div class="loading">Loading agents...</div>
+        </main>
+    </div>
+    <script src="/static/script.js"></script>
+</body>
+
+</html>
