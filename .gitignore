@@ -4,4 +4,16 @@ config.json
 likes.db
 reference/
 __pycache__/
+.venv/
+venv/
 .claude/skills/run/node_modules/
+
+# Terraform (keep .terraform.lock.hcl — it pins provider versions)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
+
+# OS
+.DS_Store
