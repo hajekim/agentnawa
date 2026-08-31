@@ -6,12 +6,15 @@ Add a platform by writing a new provider class and registering it in registry().
 """
 import dataclasses
 import os
+import secrets
 import time
 from typing import Protocol
 
 import google.auth
 import google.auth.transport.requests
 import requests
+
+import config_store
 
 
 @dataclasses.dataclass(frozen=True)
@@ -70,13 +73,12 @@ def _icon_uri(icon) -> str | None:
 class GeminiProvider:
     """Google Gemini Enterprise (Discovery Engine) agents for one Agentspace app."""
 
-    name = "gemini"
-    label = "Gemini Enterprise"
-
-    def __init__(self, project_id: str, as_app: str, cid: str | None):
+    def __init__(self, project_id: str, as_app: str, cid: str | None, name: str, label: str):
         self.project_id = project_id
         self.as_app = as_app
         self.cid = cid
+        self.name = name    # unique per-connection health id, e.g. "gemini:<conn_id>"
+        self.label = label  # connection label, or "Gemini Enterprise" default
 
     def _token(self) -> str:
         credentials, _ = google.auth.default()
@@ -123,8 +125,8 @@ class GeminiProvider:
                 # a state badge (ENABLED/PRIVATE/...) so nothing is hidden.
                 native_id = a.get("name", "")
                 agents.append(Agent(
-                    id=f"{self.name}:{native_id}",
-                    provider=self.name,
+                    id=f"gemini:{native_id}",  # native_id already globally unique; keep stable prefix
+                    provider="gemini",         # fixed internal key: the frontend keys icons on it
                     provider_label=self.label,
                     display_name=a.get("displayName") or "Unnamed Agent",
                     description=a.get("description") or "",
@@ -142,10 +144,25 @@ class GeminiProvider:
 
 
 def registry() -> list[AgentProvider]:
-    """Build the active provider list from environment. Add providers here."""
+    """Build the active provider list: one GeminiProvider per stored connection."""
+    conns = config_store.load()
+    if not conns:  # back-compat: seed one connection from env, then persist
+        project_id = os.getenv("PROJECT_ID")
+        as_app = os.getenv("AS_APP")
+        if project_id and as_app:
+            conns = [{
+                "id": secrets.token_hex(4),
+                "project_id": project_id,
+                "app_id": as_app,
+                "cid": os.getenv("CID") or "",
+                "label": "",
+            }]
+            config_store.save(conns)
     provs: list[AgentProvider] = []
-    project_id = os.getenv("PROJECT_ID")
-    as_app = os.getenv("AS_APP")
-    if project_id and as_app:
-        provs.append(GeminiProvider(project_id, as_app, os.getenv("CID")))
+    for c in conns:
+        provs.append(GeminiProvider(
+            c["project_id"], c["app_id"], c.get("cid") or "",
+            name="gemini:" + c["id"],
+            label=c.get("label") or "Gemini Enterprise",
+        ))
     return provs

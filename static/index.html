@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ko">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent Directory - 통합 에이전트 관리</title>
-    <meta name="description" content="조직에 등록된 에이전트를 플랫폼에 관계없이 한 곳에서 검색하고 실행합니다.">
+    <title>Agent Nawa — 에이전트 통합 관리</title>
+    <meta name="description" content="조직에 등록된 에이전트를 플랫폼에 관계없이 한 곳에서 검색하고 관리합니다.">
     <link rel="stylesheet" href="/static/style.css">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
     <!-- Font Awesome for icons -->
@@ -13,23 +13,27 @@
 </head>
 
 <body>
-    <div class="container">
-        <header>
-            <div class="header-left">
-                <h1>Agent Directory</h1>
-                <p>조직에 등록된 에이전트를 플랫폼에 관계없이 한 곳에서 검색하고 실행합니다.</p>
-            </div>
-            <div class="header-right">
-                <input type="search" id="search" class="search-input" placeholder="에이전트 검색 (이름·설명·타입)" aria-label="에이전트 검색">
-            </div>
-        </header>
+    <div class="app">
+        <aside class="sidebar">
+            <div class="brand"><i class="fas fa-people-group"></i> Agent Nawa</div>
+            <nav class="nav">
+                <a href="#/overview" class="nav-item" data-view="overview"><i class="fas fa-gauge-high"></i> Overview</a>
+                <a href="#/agents" class="nav-item" data-view="agents"><i class="fas fa-robot"></i> Agents</a>
+                <a href="#/sources" class="nav-item" data-view="sources"><i class="fas fa-plug"></i> Sources</a>
+            </nav>
+        </aside>
 
-        <div id="provider-health" class="provider-health"></div>
-
-        <main class="grid" id="agent-grid">
-            <div class="loading">Loading agents...</div>
+        <main class="content">
+            <div id="view-root">
+                <div class="loading">Loading agents...</div>
+            </div>
         </main>
     </div>
+
+    <!-- agent detail flyout -->
+    <div id="flyout-backdrop" class="flyout-backdrop" hidden></div>
+    <aside id="flyout" class="flyout" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-label="에이전트 상세"></aside>
+
     <script src="/static/script.js"></script>
 </body>
 

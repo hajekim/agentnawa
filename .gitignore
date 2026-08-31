@@ -1,5 +1,6 @@
 .env
 cloudrun.sh
+config.json
 likes.db
 reference/
 __pycache__/

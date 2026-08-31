@@ -1,0 +1,8 @@
+.git
+.claude
+__pycache__
+*.png
+.env
+config.json
+reference/
+node_modules
