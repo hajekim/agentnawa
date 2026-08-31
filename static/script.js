@@ -1,60 +1,61 @@
 document.addEventListener('DOMContentLoaded', async () => {
     const grid = document.getElementById('agent-grid');
-    let likesData = {};
+    const searchInput = document.getElementById('search');
+    const healthBar = document.getElementById('provider-health');
+    let allAgents = [];
 
-    // Helper to classify category
-    function classifyCategory(description, displayName) {
-        const text = (description + ' ' + displayName).toLowerCase();
-        if (text.includes('research') || text.includes('analyze') || text.includes('feedback')) {
-            return 'RESEARCH';
-        } else if (text.includes('generate') || text.includes('marcom') || text.includes('marketing') || text.includes('concept')) {
-            return 'CREATIVE';
-        } else if (text.includes('data') || text.includes('code') || text.includes('excel')) {
-            return 'DEVOPS';
-        }
-        return 'GENERAL';
-    }
-
-    // Custom icon selector
-    function getIcon(category) {
-        switch (category) {
-            case 'RESEARCH': return '<i class="fas fa-search"></i>';
-            case 'CREATIVE': return '<i class="fas fa-pen-nib"></i>';
-            case 'DEVOPS': return '<i class="fas fa-code"></i>';
+    // Icon per normalized agent type
+    function getIcon(type) {
+        switch (type) {
+            case 'High Code': return '<i class="fas fa-code"></i>';
+            case 'Low/No Code': return '<i class="fas fa-pen-nib"></i>';
+            case 'A2A': return '<i class="fas fa-network-wired"></i>';
+            case 'Workflow': return '<i class="fas fa-diagram-project"></i>';
+            case 'Skill': return '<i class="fas fa-screwdriver-wrench"></i>';
+            case 'Managed': return '<i class="fas fa-shield-halved"></i>';
             default: return '<i class="fas fa-robot"></i>';
         }
     }
 
-    // Fetch data
-    try {
-        const configRes = await fetch('/api/config');
-        const config = await configRes.json();
-        const app_id = config.cid;
-
-        const [agentsRes, likesRes] = await Promise.all([
-            fetch('/api/agents'),
-            fetch(`/api/likes?app_id=${encodeURIComponent(app_id)}`)
-        ]);
-
-        const agentsData = await agentsRes.json();
-        likesData = await likesRes.json();
-
-        // Filter agents that have lowCodeAgentDefinition
-        const filteredAgents = agentsData.agents.filter(agent => agent.lowCodeAgentDefinition && agent.state === 'ENABLED');
-
-        // Sort by likes in descending order
-        filteredAgents.sort((a, b) => {
-            const likesA = likesData[a.name] || 0;
-            const likesB = likesData[b.name] || 0;
-            return likesB - likesA;
-        });
-
-        renderGrid(filteredAgents, app_id);
-    } catch (error) {
-        grid.innerHTML = `<div class="loading">Error loading data: ${error.message}</div>`;
+    // Normalize a type label into a CSS-safe class suffix
+    function typeClass(type) {
+        return type.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     }
 
-    function renderGrid(agents, app_id) {
+    function escapeHtml(s) {
+        return (s || '').replace(/[&<>"']/g, c => (
+            { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+        ));
+    }
+
+    try {
+        const res = await fetch('/api/agents');
+        const data = await res.json();
+        allAgents = data.agents || [];
+        renderHealth(data.providers || []);
+        renderGrid(allAgents);
+    } catch (error) {
+        grid.innerHTML = `<div class="loading">Error loading data: ${escapeHtml(error.message)}</div>`;
+    }
+
+    searchInput.addEventListener('input', () => {
+        const q = searchInput.value.trim().toLowerCase();
+        renderGrid(allAgents.filter(a =>
+            (a.display_name || '').toLowerCase().includes(q) ||
+            (a.description || '').toLowerCase().includes(q) ||
+            (a.type || '').toLowerCase().includes(q)
+        ));
+    });
+
+    function renderHealth(providers) {
+        const problems = providers.filter(p => p.status !== 'ok');
+        if (problems.length === 0) { healthBar.innerHTML = ''; return; }
+        healthBar.innerHTML = problems.map(p =>
+            `<span class="health-error">⚠ ${escapeHtml(p.name)} 사용 불가: ${escapeHtml(p.error || '')}</span>`
+        ).join('');
+    }
+
+    function renderGrid(agents) {
         grid.innerHTML = '';
 
         if (!agents || agents.length === 0) {
@@ -63,76 +64,34 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         agents.forEach(agent => {
-            const category = classifyCategory(agent.description || '', agent.displayName || '');
-            const categoryClass = category.toLowerCase();
-            const icon = getIcon(category);
-            const likesCount = likesData[agent.name] || 0;
-
-            const agentId = agent.name;
+            const type = agent.type || 'Unknown';
+            const icon = getIcon(type);
+            const created = agent.created_at ? new Date(agent.created_at).toLocaleDateString() : '—';
 
             const card = document.createElement('div');
             card.className = 'card';
             card.innerHTML = `
                 <div class="card-header">
-                    <div class="icon-wrapper">
-                        ${icon}
-                    </div>
-                    <span class="badge badge-${categoryClass}">${category}</span>
+                    <div class="icon-wrapper">${icon}</div>
+                    <span class="badge badge-${typeClass(type)}">${escapeHtml(type)}</span>
                 </div>
                 <div class="card-body">
-                    <h2 title="${agent.displayName || ''}">${agent.displayName || 'Unnamed Agent'}</h2>
-                    <p>${agent.description || 'No description available.'}</p>
+                    <h2 title="${escapeHtml(agent.display_name)}">${escapeHtml(agent.display_name) || 'Unnamed Agent'}</h2>
+                    <p>${escapeHtml(agent.description) || 'No description available.'}</p>
                 </div>
                 <div class="card-footer">
                     <div class="footer-left">
-                        <span>Created: ${new Date(agent.createTime).toLocaleDateString()}</span><br/>
-                        <span>State: ${agent.state === 'ENABLED' ? `<span class="state-enabled">ENABLED</span>` : agent.state}</span>
+                        <span>Source: ${escapeHtml(agent.provider)}</span><br/>
+                        <span>Created: ${created}</span>
                     </div>
                     <div class="footer-right">
-                        <button class="action-btn like-btn" data-id="${agentId}">
-                            <i class="fas fa-heart"></i> <span class="like-count">${likesCount}</span>
-                        </button>
-                        <button class="action-btn preview-btn" data-name="${agent.name}">
-                            <i class="fas fa-eye"></i>
-                        </button>
+                        ${agent.open_url
+                            ? `<a class="action-btn open-btn" href="${escapeHtml(agent.open_url)}" target="_blank" rel="noopener"><i class="fas fa-up-right-from-square"></i> 열기</a>`
+                            : `<span class="action-btn disabled" title="이 타입은 열기 링크가 없습니다"><i class="fas fa-ban"></i></span>`}
                     </div>
                 </div>
             `;
             grid.appendChild(card);
-        });
-
-        // Add event listeners for like buttons
-        document.querySelectorAll('.like-btn').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                const id = btn.getAttribute('data-id');
-                try {
-                    const res = await fetch(`/api/like?agent_id=${encodeURIComponent(id)}&app_id=${encodeURIComponent(app_id)}`, {
-                        method: 'POST'
-                    });
-
-                    if (res.ok) {
-                        const countSpan = btn.querySelector('.like-count');
-                        countSpan.textContent = parseInt(countSpan.textContent) + 1;
-                        btn.classList.add('liked');
-                        btn.disabled = true;
-                    } else {
-                        const err = await res.json();
-                        alert(err.detail || 'Failed to like');
-                    }
-                } catch (error) {
-                    console.error('Error liking agent:', error);
-                }
-            });
-        });
-
-        // Add event listeners for preview buttons
-        document.querySelectorAll('.preview-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const name = btn.getAttribute('data-name');
-                const id = name.split('/').pop();
-                const url = `https://vertexaisearch.cloud.google.com/home/cid/${app_id}/r/agent/${id}/session/-`;
-                window.open(url, '_blank', 'width=800,height=850');
-            });
         });
     }
 });

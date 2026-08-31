@@ -2,3 +2,5 @@
 cloudrun.sh
 likes.db
 reference/
+__pycache__/
+.claude/skills/run/node_modules/

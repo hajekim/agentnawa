@@ -4,8 +4,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent Directory - Manage AI Agents</title>
-    <meta name="description" content="Agent Designer를 이용해 생성한 Low Code Agent가 보입니다. 가장 마음에 드는 Agent에 좋아요를 눌러주세요.">
+    <title>Agent Directory - 통합 에이전트 관리</title>
+    <meta name="description" content="조직에 등록된 에이전트를 플랫폼에 관계없이 한 곳에서 검색하고 실행합니다.">
     <link rel="stylesheet" href="/static/style.css">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
     <!-- Font Awesome for icons -->
@@ -17,13 +17,14 @@
         <header>
             <div class="header-left">
                 <h1>Agent Directory</h1>
-                <p>Agent Designer를 이용해 생성한 Low Code Agent가 보입니다. 가장 마음에 드는 Agent에 좋아요를 눌러주세요.</p>
+                <p>조직에 등록된 에이전트를 플랫폼에 관계없이 한 곳에서 검색하고 실행합니다.</p>
             </div>
             <div class="header-right">
-                <button class="btn btn-secondary">Sort by: Recent</button>
-                <button class="btn btn-secondary"><i class="fas fa-filter"></i> Filters</button>
+                <input type="search" id="search" class="search-input" placeholder="에이전트 검색 (이름·설명·타입)" aria-label="에이전트 검색">
             </div>
         </header>
+
+        <div id="provider-health" class="provider-health"></div>
 
         <main class="grid" id="agent-grid">
             <div class="loading">Loading agents...</div>
