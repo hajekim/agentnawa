@@ -17,7 +17,8 @@ import requests
 @dataclasses.dataclass(frozen=True)
 class Agent:
     id: str            # global, namespaced: f"{provider}:{native_id}"
-    provider: str      # "gemini" | "m365" | "custom" | ...
+    provider: str      # internal key: "gemini" | "m365" | "custom" | ...
+    provider_label: str  # human product name shown as "Source", e.g. "Gemini Enterprise"
     display_name: str
     description: str
     type: str          # normalized kind (open set): "High Code" | "Low/No Code" | "A2A" | ...
@@ -29,7 +30,8 @@ class Agent:
 
 
 class AgentProvider(Protocol):
-    name: str
+    name: str    # internal key (id namespace, health)
+    label: str   # human product name shown to users
 
     def list_agents(self) -> list[Agent]:
         ...
@@ -69,6 +71,7 @@ class GeminiProvider:
     """Google Gemini Enterprise (Discovery Engine) agents for one Agentspace app."""
 
     name = "gemini"
+    label = "Gemini Enterprise"
 
     def __init__(self, project_id: str, as_app: str, cid: str | None):
         self.project_id = project_id
@@ -116,12 +119,13 @@ class GeminiProvider:
         while True:
             data = self._get(url, headers, {"pageToken": page_token} if page_token else {})
             for a in data.get("agents", []):
-                if a.get("state") != "ENABLED":
-                    continue
+                # Admin view: list every agent regardless of state; the UI shows
+                # a state badge (ENABLED/PRIVATE/...) so nothing is hidden.
                 native_id = a.get("name", "")
                 agents.append(Agent(
                     id=f"{self.name}:{native_id}",
                     provider=self.name,
+                    provider_label=self.label,
                     display_name=a.get("displayName") or "Unnamed Agent",
                     description=a.get("description") or "",
                     type=_gemini_type(a),

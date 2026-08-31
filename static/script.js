@@ -43,7 +43,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderGrid(allAgents.filter(a =>
             (a.display_name || '').toLowerCase().includes(q) ||
             (a.description || '').toLowerCase().includes(q) ||
-            (a.type || '').toLowerCase().includes(q)
+            (a.type || '').toLowerCase().includes(q) ||
+            (a.state || '').toLowerCase().includes(q)
         ));
     });
 
@@ -65,6 +66,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         agents.forEach(agent => {
             const type = agent.type || 'Unknown';
+            const state = agent.state || 'UNKNOWN';
             const icon = getIcon(type);
             const created = agent.created_at ? new Date(agent.created_at).toLocaleDateString() : '—';
 
@@ -73,7 +75,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             card.innerHTML = `
                 <div class="card-header">
                     <div class="icon-wrapper">${icon}</div>
-                    <span class="badge badge-${typeClass(type)}">${escapeHtml(type)}</span>
+                    <div class="badges">
+                        <span class="state-badge state-${typeClass(state)}">${escapeHtml(state)}</span>
+                        <span class="badge badge-${typeClass(type)}">${escapeHtml(type)}</span>
+                    </div>
                 </div>
                 <div class="card-body">
                     <h2 title="${escapeHtml(agent.display_name)}">${escapeHtml(agent.display_name) || 'Unnamed Agent'}</h2>
@@ -81,7 +86,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 </div>
                 <div class="card-footer">
                     <div class="footer-left">
-                        <span>Source: ${escapeHtml(agent.provider)}</span><br/>
+                        <span>Source: ${escapeHtml(agent.provider_label || agent.provider)}</span><br/>
                         <span>Created: ${created}</span>
                     </div>
                     <div class="footer-right">
