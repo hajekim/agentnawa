@@ -52,6 +52,7 @@ function getIcon(type) {
         case 'Workflow': return '<i class="fas fa-diagram-project"></i>';
         case 'Skill': return '<i class="fas fa-screwdriver-wrench"></i>';
         case 'Managed': return '<i class="fas fa-shield-halved"></i>';
+        case 'Reasoning Engine': return '<i class="fas fa-brain"></i>';
         default: return '<i class="fas fa-robot"></i>';
     }
 }
@@ -533,7 +534,7 @@ async function renderSources() {
     root.innerHTML = `
         <div class="view-header">
             <h1>Sources</h1>
-            <p>Gemini Enterprise 연결을 관리합니다. 연결은 설정값이고, 상태 표는 마지막 조회 결과입니다.</p>
+            <p>소스 연결을 관리합니다. 연결은 설정값이고, 상태 표는 마지막 조회 결과입니다.</p>
         </div>
         ${connections.length ? connectionsHTML() : onboardingHTML()}
         ${addFormHTML(editing)}
@@ -543,26 +544,42 @@ async function renderSources() {
     if (list) list.addEventListener('click', onConnListClick);
     root.querySelector('#add-conn-form').addEventListener('submit', onAddConnection);
     root.querySelector('#test-conn-btn').addEventListener('click', onTestConnection);
+    root.querySelector('#conn-provider').addEventListener('change', () => syncProviderFields(root));
+    syncProviderFields(root);  // show only the selected provider's fields
     const cancel = root.querySelector('#cancel-edit-btn');
     if (cancel) cancel.addEventListener('click', () => { editingId = null; renderSources(); });
 }
 
+const PROVIDER_LABEL = { gemini: 'Gemini Enterprise', vertex: 'Vertex Agent Engine' };
+
+function connProvider(c) { return c.provider || 'gemini'; }
+
+function connConfig(c) {
+    return connProvider(c) === 'vertex'
+        ? `region: ${escapeHtml(c.region) || '—'}`
+        : `app: ${escapeHtml(c.app_id) || '—'}${c.cid ? ` · cid: ${escapeHtml(c.cid)}` : ''}`;
+}
+
 function connectionsHTML() {
-    const rows = connections.map(c => `
+    const rows = connections.map(c => {
+        const prov = connProvider(c);
+        const provLabel = PROVIDER_LABEL[prov] || prov;
+        return `
         <tr>
-            <td class="name-cell">${escapeHtml(c.label) || 'Gemini Enterprise'}</td>
+            <td class="name-cell">${escapeHtml(c.label) || provLabel}</td>
+            <td>${escapeHtml(provLabel)}</td>
             <td>${escapeHtml(c.project_id)}</td>
-            <td>${escapeHtml(c.app_id)}</td>
-            <td>${escapeHtml(c.cid) || '—'}</td>
+            <td>${connConfig(c)}</td>
             <td>
                 <button type="button" class="hbtn conn-edit" data-id="${escapeHtml(c.id)}" aria-label="연결 수정">수정</button>
                 <button type="button" class="hbtn conn-delete" data-id="${escapeHtml(c.id)}" aria-label="연결 삭제">삭제</button>
             </td>
-        </tr>`).join('');
+        </tr>`;
+    }).join('');
     return `
         <h3 class="section-title">연결 (${connections.length})</h3>
         <table class="agent-table" id="conn-list">
-            <thead><tr><th>Label</th><th>Project</th><th>App</th><th>CID</th><th></th></tr></thead>
+            <thead><tr><th>Label</th><th>Provider</th><th>Project</th><th>Config</th><th></th></tr></thead>
             <tbody>${rows}</tbody>
         </table>`;
 }
@@ -572,24 +589,34 @@ function onboardingHTML() {
         <div class="onboard-card">
             <div class="onboard-icon"><i class="fas fa-plug"></i></div>
             <h2>첫 연결을 추가하세요</h2>
-            <p>아직 연결된 소스가 없습니다. 아래 양식에 Gemini Enterprise 프로젝트와 앱 정보를 입력해 첫 연결을 만드세요.</p>
+            <p>아직 연결된 소스가 없습니다. 아래 양식에서 Provider를 고르고 소스 정보를 입력해 첫 연결을 만드세요.</p>
         </div>`;
 }
 
 function addFormHTML(editing) {
+    const prov = editing ? (editing.provider || 'gemini') : 'gemini';
     const v = k => editing ? (editing[k] || '') : '';
-    const f = (name, label, req) => `
-        <label class="field">
+    // group ties a field to one provider so syncProviderFields() can hide the rest
+    const f = (name, label, req, group) => `
+        <label class="field${group ? ' prov-field' : ''}"${group ? ` data-prov="${group}"` : ''}>
             <span>${label}${req ? ' <span class="req">*</span>' : ''}</span>
-            <input name="${name}"${req ? ' required' : ''} value="${escapeHtml(v(name))}" aria-label="${escapeHtml(label)}">
+            <input name="${name}" value="${escapeHtml(v(name))}" aria-label="${escapeHtml(label)}">
         </label>`;
     return `
         <form id="add-conn-form" class="conn-form" novalidate>
             <h3 class="section-title">${editing ? '연결 수정' : '연결 추가'}</h3>
             <div class="conn-fields">
+                <label class="field">
+                    <span>Provider</span>
+                    <select name="provider" id="conn-provider" aria-label="Provider">
+                        <option value="gemini"${prov === 'gemini' ? ' selected' : ''}>Gemini Enterprise</option>
+                        <option value="vertex"${prov === 'vertex' ? ' selected' : ''}>Vertex Agent Engine</option>
+                    </select>
+                </label>
                 ${f('project_id', 'Project ID', true)}
-                ${f('app_id', 'App ID', true)}
-                ${f('cid', 'CID', false)}
+                ${f('app_id', 'App ID', true, 'gemini')}
+                ${f('cid', 'CID', false, 'gemini')}
+                ${f('region', 'Region', true, 'vertex')}
                 ${f('label', 'Label', false)}
             </div>
             <div class="conn-actions">
@@ -599,6 +626,25 @@ function addFormHTML(editing) {
             </div>
             <div id="conn-msg" class="conn-msg" role="status" aria-live="polite"></div>
         </form>`;
+}
+
+// Show only the selected provider's fields; build the request body to match.
+function syncProviderFields(root) {
+    const sel = root.querySelector('#conn-provider');
+    if (!sel) return;
+    root.querySelectorAll('.prov-field').forEach(el => { el.hidden = el.dataset.prov !== sel.value; });
+}
+
+function connFormBody(form) {
+    const provider = form.provider.value;
+    const body = { provider, project_id: form.project_id.value.trim(), label: form.label.value.trim() };
+    if (provider === 'vertex') {
+        body.region = form.region.value.trim();
+    } else {
+        body.app_id = form.app_id.value.trim();
+        body.cid = form.cid.value.trim();
+    }
+    return body;
 }
 
 function healthTableHTML() {
@@ -649,12 +695,7 @@ async function onConnListClick(e) {
 async function onAddConnection(e) {
     e.preventDefault();
     const form = e.currentTarget;
-    const body = {
-        project_id: form.project_id.value.trim(),
-        app_id: form.app_id.value.trim(),
-        cid: form.cid.value.trim(),
-        label: form.label.value.trim(),
-    };
+    const body = connFormBody(form);
     const submit = form.querySelector('button[type="submit"]');
     submit.disabled = true;
     const url = editingId ? '/api/connections/' + encodeURIComponent(editingId) : '/api/connections';
@@ -682,13 +723,14 @@ async function onAddConnection(e) {
 async function onTestConnection() {
     const form = document.getElementById('add-conn-form');
     const btn = document.getElementById('test-conn-btn');
-    const body = {
-        project_id: form.project_id.value.trim(),
-        app_id: form.app_id.value.trim(),
-        cid: form.cid.value.trim(),
-    };
-    if (!body.project_id || !body.app_id) {
-        showConnMsg('error', 'Project ID와 App ID를 입력하세요.');
+    const body = connFormBody(form);
+    const missing = body.provider === 'vertex'
+        ? (!body.project_id || !body.region)
+        : (!body.project_id || !body.app_id);
+    if (missing) {
+        showConnMsg('error', body.provider === 'vertex'
+            ? 'Project ID와 Region을 입력하세요.'
+            : 'Project ID와 App ID를 입력하세요.');
         return;
     }
     const prev = btn.textContent;

@@ -70,6 +70,24 @@ def _icon_uri(icon) -> str | None:
     return icon or None
 
 
+def _adc_token() -> str:
+    credentials, _ = google.auth.default()
+    if not credentials.valid:
+        credentials.refresh(google.auth.transport.requests.Request())
+    return credentials.token
+
+
+def _http_get(url: str, headers: dict, params: dict) -> dict:
+    for attempt in range(3):
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        if resp.status_code in (429, 503) and attempt < 2:
+            time.sleep(float(resp.headers.get("Retry-After", 1)))
+            continue
+        resp.raise_for_status()
+        return resp.json()
+    return {}
+
+
 class GeminiProvider:
     """Google Gemini Enterprise (Discovery Engine) agents for one Agentspace app."""
 
@@ -80,12 +98,6 @@ class GeminiProvider:
         self.name = name    # unique per-connection health id, e.g. "gemini:<conn_id>"
         self.label = label  # connection label, or "Gemini Enterprise" default
 
-    def _token(self) -> str:
-        credentials, _ = google.auth.default()
-        if not credentials.valid:
-            credentials.refresh(google.auth.transport.requests.Request())
-        return credentials.token
-
     def _open_url(self, native_id: str) -> str | None:
         if not self.cid:
             return None
@@ -94,18 +106,8 @@ class GeminiProvider:
         # all types as the best available launch URL. Revisit per-type if any 404s.
         return f"https://vertexaisearch.cloud.google.com/home/cid/{self.cid}/r/agent/{agent_id}/session/-"
 
-    def _get(self, url: str, headers: dict, params: dict) -> dict:
-        for attempt in range(3):
-            resp = requests.get(url, headers=headers, params=params, timeout=30)
-            if resp.status_code in (429, 503) and attempt < 2:
-                time.sleep(float(resp.headers.get("Retry-After", 1)))
-                continue
-            resp.raise_for_status()
-            return resp.json()
-        return {}
-
     def list_agents(self) -> list[Agent]:
-        token = self._token()
+        token = _adc_token()
         url = (
             f"https://discoveryengine.googleapis.com/v1alpha/projects/{self.project_id}"
             f"/locations/global/collections/default_collection/engines/{self.as_app}"
@@ -119,7 +121,7 @@ class GeminiProvider:
         agents: list[Agent] = []
         page_token = None
         while True:
-            data = self._get(url, headers, {"pageToken": page_token} if page_token else {})
+            data = _http_get(url, headers, {"pageToken": page_token} if page_token else {})
             for a in data.get("agents", []):
                 # Admin view: list every agent regardless of state; the UI shows
                 # a state badge (ENABLED/PRIVATE/...) so nothing is hidden.
@@ -143,8 +145,61 @@ class GeminiProvider:
         return agents
 
 
+class VertexAgentEngineProvider:
+    """Vertex AI Agent Engine (Reasoning Engine) deployments in one region."""
+
+    def __init__(self, project_id: str, region: str, name: str, label: str):
+        self.project_id = project_id
+        self.region = region
+        self.name = name    # unique per-connection health id, e.g. "vertex:<conn_id>"
+        self.label = label  # connection label, or "Vertex Agent Engine" default
+
+    def _open_url(self, engine_id: str) -> str:
+        # ponytail: best-effort console deep link; revisit the path if it 404s.
+        return (
+            f"https://console.cloud.google.com/vertex-ai/agents/agent-engines/"
+            f"locations/{self.region}/engines/{engine_id}?project={self.project_id}"
+        )
+
+    def list_agents(self) -> list[Agent]:
+        token = _adc_token()
+        url = (
+            f"https://{self.region}-aiplatform.googleapis.com/v1/projects/{self.project_id}"
+            f"/locations/{self.region}/reasoningEngines"
+        )
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "x-goog-user-project": self.project_id,
+        }
+        agents: list[Agent] = []
+        page_token = None
+        while True:
+            data = _http_get(url, headers, {"pageToken": page_token} if page_token else {})
+            for a in data.get("reasoningEngines", []):
+                native_id = a.get("name", "")
+                engine_id = native_id.split("/")[-1]
+                agents.append(Agent(
+                    id=f"vertex:{native_id}",  # native_id already globally unique; keep stable prefix
+                    provider="vertex",         # fixed internal key: the frontend keys icons on it
+                    provider_label=self.label,
+                    display_name=a.get("displayName") or "Unnamed Agent",
+                    description=(a.get("spec") or {}).get("agentFramework") or "",
+                    type="Reasoning Engine",
+                    state="DEPLOYED",  # Reasoning Engines expose no lifecycle state field
+                    icon=None,
+                    created_at=a.get("createTime"),
+                    open_url=self._open_url(engine_id),
+                    raw=a,
+                ))
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+        return agents
+
+
 def registry() -> list[AgentProvider]:
-    """Build the active provider list: one GeminiProvider per stored connection."""
+    """Build the active provider list: one provider per stored connection."""
     conns = config_store.load()
     if not conns:  # back-compat: seed one connection from env, then persist
         project_id = os.getenv("PROJECT_ID")
@@ -152,6 +207,7 @@ def registry() -> list[AgentProvider]:
         if project_id and as_app:
             conns = [{
                 "id": secrets.token_hex(4),
+                "provider": "gemini",
                 "project_id": project_id,
                 "app_id": as_app,
                 "cid": os.getenv("CID") or "",
@@ -160,9 +216,17 @@ def registry() -> list[AgentProvider]:
             config_store.save(conns)
     provs: list[AgentProvider] = []
     for c in conns:
-        provs.append(GeminiProvider(
-            c["project_id"], c["app_id"], c.get("cid") or "",
-            name="gemini:" + c["id"],
-            label=c.get("label") or "Gemini Enterprise",
-        ))
+        provider = c.get("provider") or "gemini"  # back-compat: pre-discriminator rows are Gemini
+        if provider == "vertex":
+            provs.append(VertexAgentEngineProvider(
+                c["project_id"], c.get("region") or "us-central1",
+                name="vertex:" + c["id"],
+                label=c.get("label") or "Vertex Agent Engine",
+            ))
+        else:
+            provs.append(GeminiProvider(
+                c["project_id"], c["app_id"], c.get("cid") or "",
+                name="gemini:" + c["id"],
+                label=c.get("label") or "Gemini Enterprise",
+            ))
     return provs

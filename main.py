@@ -46,6 +46,23 @@ async def get_agents():
     return {"agents": [_public(a) for a in agents], "providers": health}
 
 
+def _normalized_conn(body: dict) -> dict:
+    """Validate + normalize a connection body by provider. Raises 400 on missing fields."""
+    provider = (body.get("provider") or "gemini").strip()
+    project_id = (body.get("project_id") or "").strip()
+    label = (body.get("label") or "").strip()
+    if provider == "vertex":
+        region = (body.get("region") or "").strip()
+        if not project_id or not region:
+            raise HTTPException(status_code=400, detail="project_id and region are required")
+        return {"provider": "vertex", "project_id": project_id, "region": region, "label": label}
+    app_id = (body.get("app_id") or "").strip()
+    if not project_id or not app_id:
+        raise HTTPException(status_code=400, detail="project_id and app_id are required")
+    return {"provider": "gemini", "project_id": project_id, "app_id": app_id,
+            "cid": (body.get("cid") or "").strip(), "label": label}
+
+
 @app.get("/api/connections")
 async def list_connections():
     return {"connections": config_store.load()}
@@ -53,17 +70,7 @@ async def list_connections():
 
 @app.post("/api/connections", status_code=201)
 async def create_connection(body: dict):
-    project_id = (body.get("project_id") or "").strip()
-    app_id = (body.get("app_id") or "").strip()
-    if not project_id or not app_id:
-        raise HTTPException(status_code=400, detail="project_id and app_id are required")
-    conn = {
-        "id": secrets.token_hex(4),
-        "project_id": project_id,
-        "app_id": app_id,
-        "cid": (body.get("cid") or "").strip(),
-        "label": (body.get("label") or "").strip(),
-    }
+    conn = {"id": secrets.token_hex(4), **_normalized_conn(body)}
     conns = config_store.load()
     conns.append(conn)
     config_store.save(conns)
@@ -72,19 +79,13 @@ async def create_connection(body: dict):
 
 @app.put("/api/connections/{conn_id}")
 async def update_connection(conn_id: str, body: dict):
-    project_id = (body.get("project_id") or "").strip()
-    app_id = (body.get("app_id") or "").strip()
-    if not project_id or not app_id:
-        raise HTTPException(status_code=400, detail="project_id and app_id are required")
+    fields = _normalized_conn(body)
     conns = config_store.load()
-    for c in conns:
+    for i, c in enumerate(conns):
         if c.get("id") == conn_id:
-            c["project_id"] = project_id
-            c["app_id"] = app_id
-            c["cid"] = (body.get("cid") or "").strip()
-            c["label"] = (body.get("label") or "").strip()
+            conns[i] = {"id": conn_id, **fields}  # replace wholesale: provider may have changed
             config_store.save(conns)
-            return c
+            return conns[i]
     raise HTTPException(status_code=404, detail="connection not found")
 
 
@@ -101,12 +102,19 @@ async def delete_connection(conn_id: str):
 @app.post("/api/connections/test")
 async def test_connection(body: dict):
     """Transient probe: build a throwaway provider and try one list call. Never 500."""
-    p = providers.GeminiProvider(
-        (body.get("project_id") or "").strip(),
-        (body.get("app_id") or "").strip(),
-        (body.get("cid") or "").strip(),
-        name="gemini:test", label="test",
-    )
+    if (body.get("provider") or "gemini").strip() == "vertex":
+        p = providers.VertexAgentEngineProvider(
+            (body.get("project_id") or "").strip(),
+            (body.get("region") or "").strip(),
+            name="vertex:test", label="test",
+        )
+    else:
+        p = providers.GeminiProvider(
+            (body.get("project_id") or "").strip(),
+            (body.get("app_id") or "").strip(),
+            (body.get("cid") or "").strip(),
+            name="gemini:test", label="test",
+        )
     try:
         return {"ok": True, "agent_count": len(p.list_agents())}
     except (google.auth.exceptions.DefaultCredentialsError, google.auth.exceptions.RefreshError) as e:
