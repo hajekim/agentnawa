@@ -358,6 +358,23 @@ body {
     color: #166534;
 }
 
+/* license status badges */
+.lic-healthy { background-color: #DCFCE7; color: #166534; }
+.lic-warning { background-color: #FEF3C7; color: #92400E; }
+.lic-critical { background-color: #FEE2E2; color: #991B1B; }
+.lic-unassigned { background-color: #E0E7FF; color: #3730A3; }
+.lic-expired { background-color: #E2E8F0; color: #64748B; }
+
+/* KPI tiles that only display (no click filtering) */
+.tile--static {
+    cursor: default;
+}
+
+.tile--static:hover {
+    border-color: var(--border);
+    box-shadow: none;
+}
+
 /* ----- card grid ----- */
 .grid {
     display: grid;

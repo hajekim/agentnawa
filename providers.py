@@ -198,6 +198,76 @@ class VertexAgentEngineProvider:
         return agents
 
 
+# --- License monitoring (Gemini Enterprise / Discovery Engine) ---------------
+# Licenses are project+location scoped (not per-app), so this is a plain function
+# keyed on project_id, not a provider. Callers dedupe by project_id.
+
+def _license_status(assigned: int, allocated: int, state: str) -> str:
+    if state in ("EXPIRED", "WITHDRAWN"):
+        return "EXPIRED"
+    if allocated == 0 or assigned == 0:
+        return "UNASSIGNED"
+    util = assigned / allocated * 100
+    if util >= 80:
+        return "HEALTHY"
+    if util >= 40:
+        return "WARNING"
+    return "CRITICAL"
+
+
+def _license_date(d: dict | None) -> str | None:
+    if not d:
+        return None
+    return f"{d.get('year', 0):04d}-{d.get('month', 0):02d}-{d.get('day', 0):02d}"
+
+
+def list_license_configs(project_id: str, location: str = "global") -> list[dict]:
+    """Gemini Enterprise license allocation + usage for one project.
+
+    Merges licenseConfigs (allocated seats) with licenseConfigsUsageStats
+    (assigned seats). Raises on a hard API/permission error so the caller can
+    surface it as per-project health; usage stats are best-effort (a stats-only
+    permission gap just leaves assigned=0).
+    """
+    headers = {
+        "Authorization": f"Bearer {_adc_token()}",
+        "Content-Type": "application/json",
+        "x-goog-user-project": project_id,
+    }
+    base = f"https://discoveryengine.googleapis.com/v1/projects/{project_id}/locations/{location}"
+    configs = _http_get(f"{base}/licenseConfigs", headers, {}).get("licenseConfigs", [])
+    if not configs:
+        return []
+    usage: dict[str, int] = {}
+    try:
+        stats = _http_get(
+            f"{base}/userStores/default_user_store/licenseConfigsUsageStats", headers, {}
+        ).get("licenseConfigUsageStats", [])
+        usage = {s.get("licenseConfig"): int(s.get("usedLicenseCount", 0)) for s in stats}
+    except Exception:
+        pass  # stats optional: keep allocated seats visible with assigned=0
+    out = []
+    for cfg in configs:
+        full = cfg.get("name", "")
+        allocated = int(cfg.get("licenseCount", 0))
+        assigned = usage.get(full, 0)
+        state = cfg.get("state", "ACTIVE")
+        out.append({
+            "project_id": project_id,
+            "license_config_id": full.split("/")[-1] if full else "",
+            "subscription_tier": cfg.get("subscriptionTier", ""),
+            "state": state,
+            "allocated_seats": allocated,
+            "assigned_count": assigned,
+            "available_count": max(0, allocated - assigned),
+            "utilization_rate": round(assigned / allocated * 100, 2) if allocated else 0.0,
+            "status": _license_status(assigned, allocated, state),
+            "start_date": _license_date(cfg.get("startDate")),
+            "end_date": _license_date(cfg.get("endDate")),
+        })
+    return out
+
+
 def registry() -> list[AgentProvider]:
     """Build the active provider list: one provider per stored connection."""
     conns = config_store.load()

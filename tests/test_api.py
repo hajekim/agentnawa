@@ -123,3 +123,68 @@ def test_connection_test_creds_hint(client, monkeypatch):
     r = client.post("/api/connections/test", json={"project_id": "p", "app_id": "a"})
     assert r.json()["ok"] is False
     assert "application-default login" in r.json()["hint"]
+
+
+# --- /api/licenses ----------------------------------------------------------
+
+def _lic(project_id, allocated=100, assigned=80):
+    return {"project_id": project_id, "license_config_id": "ge", "subscription_tier": "",
+            "state": "ACTIVE", "allocated_seats": allocated, "assigned_count": assigned,
+            "available_count": allocated - assigned,
+            "utilization_rate": round(assigned / allocated * 100, 2), "status": "HEALTHY",
+            "start_date": None, "end_date": None}
+
+
+def test_licenses_dedupes_shared_project(client, monkeypatch):
+    # two connections on the same project_id must be queried once, not double-counted
+    client.post("/api/connections", json={"project_id": "p", "app_id": "a1"})
+    client.post("/api/connections", json={"project_id": "p", "app_id": "a2"})
+    calls = []
+
+    def fake_list(pid, location="global"):
+        calls.append(pid)
+        return [_lic(pid)]
+
+    monkeypatch.setattr(main.providers, "list_license_configs", fake_list)
+    body = client.get("/api/licenses").json()
+    assert calls == ["p"]  # deduped: one call for the shared project
+    assert len(body["projects"]) == 1  # one row, not double-counted
+    assert body["projects"][0]["allocated_seats"] == 100
+
+
+def test_licenses_partial_failure(client, monkeypatch):
+    client.post("/api/connections", json={"project_id": "good", "app_id": "a"})
+    client.post("/api/connections", json={"project_id": "bad", "app_id": "a"})
+
+    def fake_list(pid, location="global"):
+        if pid == "bad":
+            raise RuntimeError("403 nope")
+        return [_lic("good")]
+
+    monkeypatch.setattr(main.providers, "list_license_configs", fake_list)
+    r = client.get("/api/licenses")
+    assert r.status_code == 200  # one project failing must NOT 500
+    body = r.json()
+    assert [p["project_id"] for p in body["projects"]] == ["good"]
+    health = {h["name"]: h for h in body["providers"]}
+    assert health["gemini:good"]["status"] == "ok"
+    assert health["gemini:bad"]["status"] == "error" and "403" in health["gemini:bad"]["error"]
+
+
+def test_licenses_returns_all_configs(client, monkeypatch):
+    # every config is returned incl. EXPIRED; KPI exclusion is a frontend concern
+    client.post("/api/connections", json={"project_id": "p", "app_id": "a"})
+    expired = {**_lic("p", allocated=10000, assigned=0), "status": "EXPIRED", "state": "EXPIRED"}
+    monkeypatch.setattr(main.providers, "list_license_configs",
+                        lambda pid, location="global": [expired, _lic("p", allocated=20, assigned=1)])
+    body = client.get("/api/licenses").json()
+    assert len(body["projects"]) == 2  # both shown, incl. expired
+    assert {p["status"] for p in body["projects"]} == {"EXPIRED", "HEALTHY"}
+
+
+def test_licenses_skips_vertex(client, monkeypatch):
+    client.post("/api/connections", json={"provider": "vertex", "project_id": "vp", "region": "us-central1"})
+    monkeypatch.setattr(main.providers, "list_license_configs",
+                        lambda pid, location="global": (_ for _ in ()).throw(AssertionError("vertex queried")))
+    body = client.get("/api/licenses").json()
+    assert body["projects"] == [] and body["providers"] == []

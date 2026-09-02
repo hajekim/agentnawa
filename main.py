@@ -46,6 +46,32 @@ async def get_agents():
     return {"agents": [_public(a) for a in agents], "providers": health}
 
 
+@app.get("/api/licenses")
+async def get_licenses():
+    """Gemini Enterprise license usage across configured connections. Project-scoped,
+    so connections sharing a project_id are queried once (deduped); one project
+    failing degrades to N-1, never 500."""
+    seen: dict[str, str] = {}  # project_id -> connection label (first wins)
+    for c in config_store.load():
+        if (c.get("provider") or "gemini") != "gemini":
+            continue
+        pid = c.get("project_id")
+        if pid and pid not in seen:
+            seen[pid] = c.get("label") or "Gemini Enterprise"
+    projects = []
+    health = []
+    for pid, label in seen.items():
+        try:
+            configs = providers.list_license_configs(pid)
+            projects.extend({**cfg, "label": label} for cfg in configs)
+            health.append({"name": f"gemini:{pid}", "label": label, "status": "ok",
+                           "count": len(configs), "error": None})
+        except Exception as e:
+            health.append({"name": f"gemini:{pid}", "label": label, "status": "error",
+                           "count": 0, "error": str(e)})
+    return {"projects": projects, "providers": health}
+
+
 def _normalized_conn(body: dict) -> dict:
     """Validate + normalize a connection body by provider. Raises 400 on missing fields."""
     provider = (body.get("provider") or "gemini").strip()

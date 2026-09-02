@@ -12,6 +12,13 @@ const state = {
     ovState: '',  // overview: which state the type-breakdown is filtered to ('' = all)
 };
 
+// Licenses view: lazy-loaded from /api/licenses. `project` drives the integrated
+// (전체) vs per-project (구분) scope; status/q filter only the table.
+const licState = {
+    data: null, project: '', status: '', q: '',
+    sortKey: 'utilization_rate', sortDir: 'desc',
+};
+
 async function loadAgents() {
     const res = await fetch('/api/agents');
     const data = await res.json();
@@ -100,7 +107,7 @@ function keyActivate(handler) {
 function route() {
     closeFlyout();  // flyout lives outside #view-root; dismiss it when switching views
     const hash = (location.hash || '#/agents').replace('#/', '');
-    state.view = ['overview', 'agents', 'sources'].includes(hash) ? hash : 'agents';
+    state.view = ['overview', 'agents', 'licenses', 'sources'].includes(hash) ? hash : 'agents';
     document.querySelectorAll('.nav-item').forEach(el => {
         const active = el.dataset.view === state.view;
         el.classList.toggle('active', active);
@@ -108,6 +115,7 @@ function route() {
         else el.removeAttribute('aria-current');
     });
     if (state.view === 'overview') renderOverview();
+    else if (state.view === 'licenses') renderLicenses();
     else if (state.view === 'sources') renderSources();
     else renderAgents();
 }
@@ -503,6 +511,210 @@ function healthHTML() {
     return `<div class="provider-health">${problems.map(p =>
         `<span class="health-error">⚠ ${escapeHtml(p.label || p.name)} 사용 불가: ${escapeHtml(p.error || '')}</span>`
     ).join('')}</div>`;
+}
+
+/* ---------- licenses view ---------- */
+// non-interactive KPI tiles (shared shape with the agents tiles, no click)
+function kpiHTML(pairs) {
+    return `<div class="tiles">` + pairs.map(([label, val]) =>
+        `<div class="tile tile--static"><div class="tile-value">${escapeHtml(String(val))}</div><div class="tile-label">${escapeHtml(label)}</div></div>`
+    ).join('') + `</div>`;
+}
+
+async function loadLicenses() {
+    const res = await fetch('/api/licenses');
+    licState.data = await res.json();
+}
+
+async function renderLicenses() {
+    const root = document.getElementById('view-root');
+    if (!licState.data) {
+        root.innerHTML = `<div class="loading">라이선스를 불러오는 중…</div>`;
+        try { await loadLicenses(); }
+        catch (error) {
+            root.innerHTML = `<div class="loading">라이선스를 불러오지 못했습니다: ${escapeHtml(error.message)}</div>`;
+            return;
+        }
+    }
+    const projectIds = [...new Set(licState.data.projects.map(p => p.project_id))].sort();
+    if (licState.project && !projectIds.includes(licState.project)) licState.project = '';  // stale selection
+    const statuses = [...new Set(licState.data.projects.map(p => p.status))].sort();
+    if (licState.status && !statuses.includes(licState.status)) licState.status = '';  // stale selection
+    root.innerHTML = `
+        <div class="view-header view-header--row">
+            <div>
+                <h1>Licenses</h1>
+                <p>등록된 Gemini Enterprise 프로젝트의 라이선스 좌석 할당·사용률입니다.</p>
+            </div>
+            <div class="header-actions">
+                <button id="lic-refresh" class="hbtn" aria-label="새로고침"><i class="fas fa-rotate-right"></i></button>
+                <button id="lic-csv" class="hbtn" aria-label="CSV로 내보내기">CSV</button>
+            </div>
+        </div>
+        ${licHealthHTML()}
+        <div id="lic-tiles"></div>
+        <div class="filter-bar">
+            <select id="lic-project" class="filter-select" aria-label="프로젝트 필터">
+                <option value="">전체 (통합)</option>${opts(projectIds)}
+            </select>
+            <select id="lic-status" class="filter-select" aria-label="상태 필터">
+                <option value="">모든 상태</option>${opts(statuses)}
+            </select>
+            <input id="lic-search" class="search-input" type="search" placeholder="프로젝트·구성 검색" aria-label="라이선스 검색">
+        </div>
+        <div class="breakdown"><h3>프로젝트별 사용률</h3><div id="lic-bars"></div></div>
+        <div class="result-count" id="lic-count"></div>
+        <div id="lic-table"></div>`;
+
+    const proj = root.querySelector('#lic-project');
+    const stt = root.querySelector('#lic-status');
+    const srch = root.querySelector('#lic-search');
+    proj.value = licState.project; stt.value = licState.status; srch.value = licState.q;
+    proj.addEventListener('change', () => { licState.project = proj.value; updateLicView(); });
+    stt.addEventListener('change', () => { licState.status = stt.value; updateLicView(); });
+    srch.addEventListener('input', () => { licState.q = srch.value; updateLicView(); });
+    root.querySelector('#lic-refresh').addEventListener('click', onLicRefresh);
+    root.querySelector('#lic-csv').addEventListener('click', exportLicensesCSV);
+    const tableEl = root.querySelector('#lic-table');
+    tableEl.addEventListener('click', onLicTableClick);
+    tableEl.addEventListener('keydown', keyActivate(onLicTableClick));
+
+    updateLicView();
+}
+
+function licHealthHTML() {
+    const probs = (licState.data.providers || []).filter(p => p.status !== 'ok');
+    if (!probs.length) return '';
+    return `<div class="provider-health">${probs.map(p =>
+        `<span class="health-error">⚠ ${escapeHtml(p.label || p.name)} 라이선스 조회 실패: ${escapeHtml(p.error || '')}</span>`
+    ).join('')}</div>`;
+}
+
+// KPI scope follows the project selector only (전체=통합 / 선택=구분).
+function licScope() {
+    const all = licState.data.projects;
+    return licState.project ? all.filter(p => p.project_id === licState.project) : all;
+}
+
+// Totals count usable licenses only; EXPIRED stays in the table but not the KPIs.
+function licSummary(rows) {
+    const active = rows.filter(p => p.status !== 'EXPIRED');
+    const total = active.reduce((a, p) => a + (p.allocated_seats || 0), 0);
+    const assigned = active.reduce((a, p) => a + (p.assigned_count || 0), 0);
+    return {
+        total, assigned,
+        available: active.reduce((a, p) => a + (p.available_count || 0), 0),
+        util: total ? Math.round(assigned / total * 10000) / 100 : 0,
+    };
+}
+
+function licFiltered() {
+    let rows = licScope();
+    if (licState.status) rows = rows.filter(p => p.status === licState.status);
+    const q = licState.q.trim().toLowerCase();
+    if (q) rows = rows.filter(p =>
+        (p.project_id || '').toLowerCase().includes(q) ||
+        (p.license_config_id || '').toLowerCase().includes(q) ||
+        (p.label || '').toLowerCase().includes(q));
+    const k = licState.sortKey, dir = licState.sortDir === 'asc' ? 1 : -1;
+    return rows.slice().sort((a, b) => {
+        const va = a[k], vb = b[k];
+        if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir;
+        return String(va ?? '').localeCompare(String(vb ?? ''), undefined, { numeric: true }) * dir;
+    });
+}
+
+// Per-project utilization bars over the filtered (non-expired) rows.
+function licBarsHTML(rows) {
+    const byProj = {};
+    for (const p of rows) {
+        if (p.status === 'EXPIRED') continue;
+        const g = byProj[p.project_id] || (byProj[p.project_id] = { alloc: 0, asg: 0 });
+        g.alloc += p.allocated_seats || 0;
+        g.asg += p.assigned_count || 0;
+    }
+    const entries = Object.entries(byProj).filter(([, g]) => g.alloc > 0);
+    if (!entries.length) return '';
+    return entries.sort((a, b) => (b[1].asg / b[1].alloc) - (a[1].asg / a[1].alloc)).map(([pid, g]) => {
+        const util = Math.round(g.asg / g.alloc * 100);
+        return `<div class="bar-row">
+            <span class="bar-label" title="${escapeHtml(pid)}">${escapeHtml(pid)}</span>
+            <span class="bar-track"><span class="bar-fill" style="width:${Math.min(100, util)}%"></span></span>
+            <span class="bar-count">${util}%</span>
+        </div>`;
+    }).join('');
+}
+
+function updateLicView() {
+    const s = licSummary(licScope());
+    document.getElementById('lic-tiles').innerHTML = kpiHTML([
+        ['총 라이선스', s.total.toLocaleString()],
+        ['배정', s.assigned.toLocaleString()],
+        ['잔여', s.available.toLocaleString()],
+        ['사용률', s.util + '%'],
+    ]);
+    const rows = licFiltered();
+    document.getElementById('lic-bars').innerHTML =
+        licBarsHTML(rows) || `<div class="result-count">표시할 활성 라이선스가 없습니다.</div>`;
+    document.getElementById('lic-count').textContent = `${rows.length}개 라이선스 구성`;
+    document.getElementById('lic-table').innerHTML = licTableHTML(rows);
+}
+
+const LIC_TABLE_COLS = [
+    { k: 'project_id', label: 'Project' },
+    { k: 'license_config_id', label: 'Config' },
+    { k: 'subscription_tier', label: 'Tier' },
+    { k: 'allocated_seats', label: 'Allocated' },
+    { k: 'assigned_count', label: 'Assigned' },
+    { k: 'available_count', label: 'Available' },
+    { k: 'utilization_rate', label: 'Util %' },
+    { k: 'status', label: 'Status' },
+    { k: 'end_date', label: 'End' },
+];
+
+function licTier(t) { return (t || '').replace('SUBSCRIPTION_TIER_', '') || '—'; }
+
+function licTableHTML(rows) {
+    if (!rows.length) return `<div class="loading">조건에 맞는 라이선스가 없습니다.</div>`;
+    const head = LIC_TABLE_COLS.map(col =>
+        `<th data-sort="${col.k}" role="button" tabindex="0" aria-sort="${licState.sortKey === col.k ? (licState.sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}">${col.label} <span class="sort-ind">${licState.sortKey === col.k ? (licState.sortDir === 'asc' ? '▲' : '▼') : ''}</span></th>`).join('');
+    const body = rows.map(p => `<tr>
+        <td class="name-cell">${escapeHtml(p.project_id)}</td>
+        <td>${escapeHtml(p.license_config_id)}</td>
+        <td>${escapeHtml(licTier(p.subscription_tier))}</td>
+        <td>${(p.allocated_seats || 0).toLocaleString()}</td>
+        <td>${(p.assigned_count || 0).toLocaleString()}</td>
+        <td>${(p.available_count || 0).toLocaleString()}</td>
+        <td>${p.utilization_rate}%</td>
+        <td><span class="state-badge lic-${escapeHtml((p.status || '').toLowerCase())}">${escapeHtml(p.status)}</span></td>
+        <td>${escapeHtml(p.end_date || '—')}</td>
+    </tr>`).join('');
+    return `<table class="agent-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function onLicTableClick(e) {
+    const th = e.target.closest('th[data-sort]');
+    if (!th) return;
+    const k = th.dataset.sort;
+    if (licState.sortKey === k) licState.sortDir = licState.sortDir === 'asc' ? 'desc' : 'asc';
+    else { licState.sortKey = k; licState.sortDir = 'asc'; }
+    updateLicView();
+}
+
+async function onLicRefresh() {
+    const btn = document.getElementById('lic-refresh');
+    btn.disabled = true;
+    btn.classList.add('loading');
+    try { await loadLicenses(); } catch (e) { /* keep current data on failure */ }
+    renderLicenses();
+}
+
+const LIC_EXPORT_COLS = ['project_id', 'license_config_id', 'subscription_tier', 'state',
+    'allocated_seats', 'assigned_count', 'available_count', 'utilization_rate', 'status', 'start_date', 'end_date'];
+
+function exportLicensesCSV() {
+    const rows = licFiltered().map(p => LIC_EXPORT_COLS.map(k => csvCell(p[k])).join(','));
+    download([LIC_EXPORT_COLS.join(','), ...rows].join('\r\n'), 'licenses.csv', 'text/csv');
 }
 
 /* ---------- sources view: connection manager ---------- */

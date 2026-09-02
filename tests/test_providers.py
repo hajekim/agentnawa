@@ -150,3 +150,59 @@ def test_registry_env_seed(monkeypatch):
     assert len(provs) == 1 and isinstance(provs[0], providers.GeminiProvider)
     assert saved and saved[0][0]["project_id"] == "proj"
     assert saved[0][0]["provider"] == "gemini"
+
+
+# --- license monitoring -----------------------------------------------------
+
+def test_license_status():
+    assert providers._license_status(90, 100, "ACTIVE") == "HEALTHY"
+    assert providers._license_status(50, 100, "ACTIVE") == "WARNING"
+    assert providers._license_status(10, 100, "ACTIVE") == "CRITICAL"
+    assert providers._license_status(0, 100, "ACTIVE") == "UNASSIGNED"
+    assert providers._license_status(90, 100, "EXPIRED") == "EXPIRED"
+
+
+def test_list_license_configs_merges_usage(monkeypatch):
+    monkeypatch.setattr(providers, "_adc_token", lambda: "t")
+    configs = {"licenseConfigs": [{
+        "name": "projects/p/locations/global/licenseConfigs/ge",
+        "licenseCount": 100, "state": "ACTIVE",
+        "subscriptionTier": "SUBSCRIPTION_TIER_ENTERPRISE",
+        "startDate": {"year": 2024, "month": 1, "day": 5}}]}
+    stats = {"licenseConfigUsageStats": [
+        {"licenseConfig": "projects/p/locations/global/licenseConfigs/ge", "usedLicenseCount": 80}]}
+
+    def fake_http_get(url, headers, params):
+        return stats if "licenseConfigsUsageStats" in url else configs
+
+    monkeypatch.setattr(providers, "_http_get", fake_http_get)
+    rows = providers.list_license_configs("p")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["project_id"] == "p" and r["license_config_id"] == "ge"
+    assert r["allocated_seats"] == 100 and r["assigned_count"] == 80
+    assert r["available_count"] == 20 and r["utilization_rate"] == 80.0
+    assert r["status"] == "HEALTHY" and r["start_date"] == "2024-01-05"
+
+
+def test_list_license_configs_empty(monkeypatch):
+    monkeypatch.setattr(providers, "_adc_token", lambda: "t")
+    monkeypatch.setattr(providers, "_http_get", lambda url, headers, params: {})
+    assert providers.list_license_configs("p") == []
+
+
+def test_list_license_configs_stats_optional(monkeypatch):
+    # usageStats failing must NOT blank the config: assigned defaults to 0
+    monkeypatch.setattr(providers, "_adc_token", lambda: "t")
+    configs = {"licenseConfigs": [{
+        "name": "projects/p/locations/global/licenseConfigs/ge", "licenseCount": 50}]}
+
+    def fake_http_get(url, headers, params):
+        if "licenseConfigsUsageStats" in url:
+            raise RuntimeError("stats 403")
+        return configs
+
+    monkeypatch.setattr(providers, "_http_get", fake_http_get)
+    rows = providers.list_license_configs("p")
+    assert rows[0]["allocated_seats"] == 50 and rows[0]["assigned_count"] == 0
+    assert rows[0]["status"] == "UNASSIGNED"
