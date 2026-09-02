@@ -26,6 +26,7 @@ const usageState = {
     sortKey: 'total_tokens', sortDir: 'desc',
 };
 let usageChart = null;  // singleton Chart.js instance; destroyed + recreated on every render
+let overviewChart = null;  // Overview's own Chart.js instance, SEPARATE from usageChart (own canvas #ov-chart)
 
 async function loadAgents() {
     const res = await fetch('/api/agents');
@@ -125,6 +126,7 @@ function route() {
     // The Chart.js instance sits on a canvas inside #view-root; leaving usage
     // detaches that canvas, so destroy it here or it leaks until we return.
     if (state.view !== 'usage' && usageChart) { usageChart.destroy(); usageChart = null; }
+    if (state.view !== 'overview' && overviewChart) { overviewChart.destroy(); overviewChart = null; }
     if (state.view === 'overview') renderOverview();
     else if (state.view === 'licenses') renderLicenses();
     else if (state.view === 'usage') renderUsage();
@@ -491,10 +493,98 @@ function renderOverview() {
         <div class="breakdown">
             <h3>타입별 분포${state.ovState ? ` · <span class="bk-filter">${escapeHtml(state.ovState)}</span>` : ''}</h3>
             ${barsHTML(byType)}
-        </div>`;
+        </div>
+        <h3 class="section-title">라이선스</h3>
+        <div id="ov-lic"><div class="result-count">라이선스를 불러오는 중…</div></div>
+        <h3 class="section-title">사용량 (Antigravity)</h3>
+        <div id="ov-usage"><div class="result-count">사용량을 불러오는 중…</div></div>`;
     const grid = root.querySelector('.dash-grid');
     grid.addEventListener('click', onOverviewTile);
     grid.addEventListener('keydown', keyActivate(onOverviewTile));
+    // Progressive fill: license + usage each fetch independently (cached into
+    // licState/usageState); a slow/unconfigured usage never blocks the rest.
+    fillOverviewLic();
+    fillOverviewUsage();
+}
+
+// Integrated license summary (KPI + per-project utilization bars). Reads
+// licState.data.projects directly so a sticky detail-view selection can't scope it.
+async function fillOverviewLic() {
+    if (!licState.data) {
+        try { await loadLicenses(); }
+        catch (error) {
+            const host = document.getElementById('ov-lic');
+            if (host) host.innerHTML = `<div class="result-count">라이선스를 불러오지 못했습니다: ${escapeHtml(error.message)}</div>`;
+            return;
+        }
+    }
+    const host = document.getElementById('ov-lic');
+    if (!host) return;  // tile re-render or nav-away detached the container
+    const s = licSummary(licState.data.projects);
+    host.innerHTML = licHealthHTML() + kpiHTML([
+        ['총 라이선스', s.total.toLocaleString()],
+        ['배정', s.assigned.toLocaleString()],
+        ['잔여', s.available.toLocaleString()],
+        ['사용률', s.util + '%'],
+    ]) + `<div class="breakdown"><h3>프로젝트별 사용률</h3>${
+        licBarsHTML(licState.data.projects) || '<div class="result-count">표시할 활성 라이선스가 없습니다.</div>'
+    }</div>`;
+}
+
+// Integrated usage summary (KPI + daily-trend chart + per-project token bars).
+// Reads usageState.data.summary directly (always 통합); degrades to the message
+// banner with no chart when unconfigured / no logs.
+async function fillOverviewUsage() {
+    if (!usageState.data) {
+        try { await loadUsage(); }
+        catch (error) {
+            const host = document.getElementById('ov-usage');
+            if (host) host.innerHTML = `<div class="result-count">사용량을 불러오지 못했습니다: ${escapeHtml(error.message)}</div>`;
+            return;
+        }
+    }
+    const host = document.getElementById('ov-usage');
+    if (!host) return;
+    const s = usageState.data.summary;
+    const hasDaily = (usageState.data.daily || []).length > 0;
+    host.innerHTML = usageMessageHTML() + usageHealthHTML() + kpiHTML([
+        ['총 추론', s.total_inferences.toLocaleString()],
+        ['총 토큰', fmtNum(s.total_tokens)],
+        ['활성 사용자', s.active_users.toLocaleString()],
+        ['모니터링 프로젝트', s.monitored_projects.toLocaleString()],
+    ]) + (hasDaily ? `<div class="chart-card"><h3>일별 추세 (토큰)</h3>
+        <div class="chart-wrap"><canvas id="ov-chart"></canvas></div></div>
+        <div class="breakdown"><h3>프로젝트별 토큰 사용량</h3>${
+            usageBarsHTML(usageState.data.projects) || '<div class="result-count">표시할 사용량이 없습니다.</div>'
+        }</div>` : '');
+    if (hasDaily) renderOverviewChart();
+}
+
+// Integrated daily-token area chart on its own canvas/instance (never #ag-chart/usageChart).
+function renderOverviewChart() {
+    const canvas = document.getElementById('ov-chart');
+    if (!canvas || typeof Chart === 'undefined') return;  // CDN unreachable → skip chart, rest works
+    if (overviewChart) { overviewChart.destroy(); overviewChart = null; }
+    const daily = usageState.data.daily || [];
+    if (!daily.length) return;
+    const color = USAGE_COLORS[0];
+    overviewChart = new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels: daily.map(d => d.date),
+            datasets: [{
+                label: '토큰', data: daily.map(d => d.tokens || 0),
+                backgroundColor: color + '33', borderColor: color, borderWidth: 2,
+                fill: true, tension: 0.3, pointRadius: 0,
+            }],
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            scales: { x: { grid: { display: false } }, y: { beginAtZero: true, ticks: { callback: v => fmtNum(v) } } },
+            plugins: { legend: { display: false } },
+        },
+    });
 }
 
 function onOverviewTile(e) {
@@ -849,8 +939,7 @@ function usageSummary() {
              : { inferences: 0, tokens: 0, users: 0, projects: 0 };
 }
 
-function usageBarsHTML() {
-    const rows = usageScopeProjects();
+function usageBarsHTML(rows = usageScopeProjects()) {
     const total = rows.reduce((a, p) => a + (p.total_tokens || 0), 0);
     if (!rows.length || total <= 0) return '';
     return rows.slice().sort((a, b) => b.total_tokens - a.total_tokens).map(p => {
