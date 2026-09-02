@@ -114,8 +114,8 @@ function keyActivate(handler) {
 /* ---------- router ---------- */
 function route() {
     closeFlyout();  // flyout lives outside #view-root; dismiss it when switching views
-    const hash = (location.hash || '#/agents').replace('#/', '');
-    state.view = ['overview', 'agents', 'licenses', 'usage', 'sources'].includes(hash) ? hash : 'agents';
+    const hash = (location.hash || '#/overview').replace('#/', '');
+    state.view = ['overview', 'agents', 'licenses', 'usage', 'sources'].includes(hash) ? hash : 'overview';
     document.querySelectorAll('.nav-item').forEach(el => {
         const active = el.dataset.view === state.view;
         el.classList.toggle('active', active);
