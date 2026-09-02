@@ -4,7 +4,7 @@ terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = ">= 6.0, < 7.0" # iap_enabled on Cloud Run v2 + regional IAP IAM are 6.x
+      version = ">= 7.0, < 8.0" # iap_enabled on google_cloud_run_v2_service lands in 7.x
     }
   }
 }

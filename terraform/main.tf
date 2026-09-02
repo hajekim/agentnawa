@@ -93,6 +93,9 @@ resource "google_cloud_run_v2_service" "svc" {
   # so ingress must accept it; IAP + IAM are then the access control.
   ingress = var.enable_iap ? "INGRESS_TRAFFIC_ALL" : "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
 
+  # Enable IAP directly on the service with a Google-managed OAuth client.
+  iap_enabled = var.enable_iap
+
   template {
     service_account = google_service_account.svc.email
 
@@ -125,10 +128,10 @@ resource "google_cloud_run_v2_service_iam_member" "invoker" {
 }
 
 # (h) IAP access. Grants the listed members access through IAP. Off by default
-# so a bare `terraform apply` works for evaluation. Turning IAP on for the
-# service, plus its OAuth brand / consent-screen, is a one-time manual step in
-# the console (the stable provider has no field for it); do that before setting
-# enable_iap = true, otherwise this binding has nothing to attach to.
+# so a bare `terraform apply` works for evaluation. IAP itself is turned on by
+# iap_enabled on the service above, using a Google-managed OAuth client -- no
+# manual OAuth brand / consent-screen (the legacy IAP OAuth Admin API was shut
+# down 2026-03).
 resource "google_iap_web_cloud_run_service_iam_member" "iap_accessor" {
   for_each               = var.enable_iap ? toset(var.invoker_members) : toset([])
   project                = var.project_id

@@ -76,9 +76,9 @@ only the new bindings are added.
 
 ## Enabling IAP
 
-IAP enforcement on the service and its OAuth consent-screen / brand are a
-one-time manual setup in the console (the stable provider has no field to toggle
-IAP on a Cloud Run service). Do that first, then set `-var enable_iap=true`:
-Terraform grants `invoker_members` `roles/iap.httpsResourceAccessor` and opens
-ingress so IAP can reach the service. Left at the default (`false`), none of
-that is created, so a bare apply stays clean for evaluation.
+Set `-var enable_iap=true`: Terraform sets `iap_enabled` on the service (IAP
+with a Google-managed OAuth client — no manual OAuth brand / consent-screen),
+grants `invoker_members` `roles/iap.httpsResourceAccessor`, and opens ingress so
+IAP can reach the service. Left at the default (`false`), none of that is
+created, so a bare apply stays clean for evaluation. Requires the google
+provider 7.x (see `versions.tf`).
