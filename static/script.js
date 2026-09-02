@@ -613,12 +613,24 @@ function barsHTML(counts) {
         </div>`).join('');
 }
 
+// One health chip. VPC-SC denials render amber (an expected onboarding state, not
+// a red outage) with the actionable hint + copyable uid; everything else is the
+// generic red error. `verb` is the view-specific failure phrase.
+function healthRow(p, verb) {
+    if (p.error_type === 'vpc_sc') {
+        const v = p.vpc_sc || {};
+        const svc = v.service ? ` (${escapeHtml(v.service)})` : '';
+        const uid = v.unique_id ? `<code>uid: ${escapeHtml(v.unique_id)}</code>` : '';
+        return `<span class="health-vpcsc">🔒 ${escapeHtml(p.label || p.name)} — VPC-SC 온보딩 대기${svc}`
+            + `<span class="health-hint">${escapeHtml(p.hint || '')} ${uid}</span></span>`;
+    }
+    return `<span class="health-error">⚠ ${escapeHtml(p.label || p.name)} ${verb}: ${escapeHtml(p.error || '')}</span>`;
+}
+
 function healthHTML() {
     const problems = providersHealth.filter(p => p.status !== 'ok');
     if (!problems.length) return '';
-    return `<div class="provider-health">${problems.map(p =>
-        `<span class="health-error">⚠ ${escapeHtml(p.label || p.name)} 사용 불가: ${escapeHtml(p.error || '')}</span>`
-    ).join('')}</div>`;
+    return `<div class="provider-health">${problems.map(p => healthRow(p, '사용 불가')).join('')}</div>`;
 }
 
 /* ---------- licenses view ---------- */
@@ -693,9 +705,7 @@ async function renderLicenses() {
 function licHealthHTML() {
     const probs = (licState.data.providers || []).filter(p => p.status !== 'ok');
     if (!probs.length) return '';
-    return `<div class="provider-health">${probs.map(p =>
-        `<span class="health-error">⚠ ${escapeHtml(p.label || p.name)} 라이선스 조회 실패: ${escapeHtml(p.error || '')}</span>`
-    ).join('')}</div>`;
+    return `<div class="provider-health">${probs.map(p => healthRow(p, '라이선스 조회 실패')).join('')}</div>`;
 }
 
 // KPI scope follows the project selector only (전체=통합 / 선택=구분).
@@ -1260,13 +1270,20 @@ function connFormBody(form) {
 }
 
 function healthTableHTML() {
-    const rows = providersHealth.map(p => `
+    const rows = providersHealth.map(p => {
+        const vpc = p.error_type === 'vpc_sc';
+        const status = p.status === 'ok'
+            ? `<span class="status-ok">정상</span>`
+            : vpc ? `<span class="status-vpcsc">VPC-SC 대기</span>`
+                  : `<span class="status-error">오류</span>`;
+        return `
         <tr>
             <td class="name-cell">${escapeHtml(p.label || p.name)}</td>
-            <td><span class="status-${p.status === 'ok' ? 'ok' : 'error'}">${p.status === 'ok' ? '정상' : '오류'}</span></td>
+            <td>${status}</td>
             <td>${p.count ?? 0}</td>
-            <td>${escapeHtml(p.error || '—')}</td>
-        </tr>`).join('');
+            <td>${escapeHtml((vpc ? p.hint : p.error) || '—')}</td>
+        </tr>`;
+    }).join('');
     return `
         <h3 class="section-title">상태</h3>
         <table class="agent-table">

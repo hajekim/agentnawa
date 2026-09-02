@@ -26,6 +26,24 @@ def _public(agent) -> dict:
     return d
 
 
+def _err_fields(e: Exception) -> dict:
+    """Health-row fields for a failed connection. A VPC-SC denial gets an amber,
+    actionable shape (it is an expected onboarding state, not an outage); every
+    other error keeps the plain string with hint='' so the existing contract holds.
+    """
+    if isinstance(e, providers.VpcScDenied):
+        return {
+            "error": str(e),
+            "error_type": "vpc_sc",
+            "vpc_sc": {"service": e.service, "unique_id": e.unique_id,
+                       "troubleshoot_token": e.troubleshoot_token},
+            "hint": ("VPC Service Controls가 이 프로젝트를 차단하고 있습니다. 고객사 조직 관리자가 "
+                     "인그레스 규칙에 우리 서비스 계정을 추가해야 합니다 (docs/vpc-sc-onboarding.md). "
+                     "위반 분석기에서 uid로 확인하세요."),
+        }
+    return {"error": str(e), "error_type": "other", "hint": ""}
+
+
 @app.get("/")
 async def read_index():
     return FileResponse("static/index.html")
@@ -42,7 +60,7 @@ async def get_agents():
             agents.extend(items)
             health.append({"name": p.name, "label": p.label, "status": "ok", "count": len(items), "error": None})
         except Exception as e:
-            health.append({"name": p.name, "label": p.label, "status": "error", "count": 0, "error": str(e)})
+            health.append({"name": p.name, "label": p.label, "status": "error", "count": 0, **_err_fields(e)})
     agents.sort(key=lambda a: a.created_at or "", reverse=True)
     return {"agents": [_public(a) for a in agents], "providers": health}
 
@@ -69,7 +87,7 @@ async def get_licenses():
                            "count": len(configs), "error": None})
         except Exception as e:
             health.append({"name": f"gemini:{pid}", "label": label, "status": "error",
-                           "count": 0, "error": str(e)})
+                           "count": 0, **_err_fields(e)})
     return {"projects": projects, "providers": health}
 
 
@@ -178,6 +196,9 @@ async def test_connection(body: dict):
         return {"ok": True, "agent_count": len(p.list_agents())}
     except (google.auth.exceptions.DefaultCredentialsError, google.auth.exceptions.RefreshError) as e:
         return {"ok": False, "error": str(e), "hint": "Run: gcloud auth application-default login"}
+    except providers.VpcScDenied as e:
+        f = _err_fields(e)  # modal consumes error+hint only; skip the vpc_sc struct
+        return {"ok": False, "error": f["error"], "hint": f["hint"]}
     except Exception as e:
         return {"ok": False, "error": str(e), "hint": ""}
 

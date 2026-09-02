@@ -78,12 +78,65 @@ def _adc_token() -> str:
     return credentials.token
 
 
+class VpcScDenied(Exception):
+    """A 403 whose body is a VPC Service Controls perimeter denial (not plain IAM).
+
+    Carries the fields a customer's org admin needs to let us through and to
+    diagnose in the Violation Analyzer: the target service, the unique id, and the
+    troubleshoot token. Subclasses Exception so the existing per-connection
+    handlers catch it and degrade to N-1 rather than 500.
+    """
+
+    def __init__(self, service: str, unique_id: str, troubleshoot_token: str):
+        self.service = service
+        self.unique_id = unique_id
+        self.troubleshoot_token = troubleshoot_token
+        super().__init__(
+            f"VPC Service Controls가 {service or 'API'} 접근을 차단했습니다 (uid: {unique_id})"
+        )
+
+
+def _vpc_sc_denied(resp) -> "VpcScDenied | None":
+    """Return a VpcScDenied if a 403 body is a VPC-SC perimeter denial, else None.
+
+    A VPC-SC denial and a plain IAM PERMISSION_DENIED share the same 403 status,
+    so we key strictly on the two independent signals Google emits: a
+    PreconditionFailure violation of type VPC_SERVICE_CONTROLS, or an ErrorInfo
+    reason of SECURITY_POLICY_VIOLATED (whose metadata carries service/uid/token).
+    A non-JSON body (e.g. HTML from an intermediary proxy) returns None so the
+    caller falls through to raise_for_status and keeps today's HTTPError.
+    """
+    try:
+        details = resp.json().get("error", {}).get("details", [])
+    except ValueError:
+        return None
+    is_vpc_sc = False
+    meta: dict = {}
+    for d in details:
+        if any(v.get("type") == "VPC_SERVICE_CONTROLS" for v in d.get("violations", [])):
+            is_vpc_sc = True
+        if d.get("reason") == "SECURITY_POLICY_VIOLATED":
+            is_vpc_sc = True
+            meta = d.get("metadata", {}) or {}
+    if not is_vpc_sc:
+        return None
+    return VpcScDenied(
+        service=meta.get("service", ""),
+        unique_id=meta.get("uid", ""),
+        troubleshoot_token=meta.get("troubleshootToken", ""),
+    )
+
+
 def _http_get(url: str, headers: dict, params: dict) -> dict:
     for attempt in range(3):
         resp = requests.get(url, headers=headers, params=params, timeout=30)
         if resp.status_code in (429, 503) and attempt < 2:
             time.sleep(float(resp.headers.get("Retry-After", 1)))
             continue
+        if resp.status_code == 403:
+            denied = _vpc_sc_denied(resp)
+            if denied:
+                raise denied
         resp.raise_for_status()
         return resp.json()
     return {}

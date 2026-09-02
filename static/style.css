@@ -620,8 +620,31 @@ body {
     font-size: 0.8rem;
 }
 
+.health-vpcsc {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    background-color: #FFFBEB;
+    color: #92400E;
+    border: 1px solid #FDE68A;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.5rem;
+    font-size: 0.8rem;
+}
+
+.health-hint {
+    font-weight: 400;
+    color: var(--text-secondary);
+}
+
+.health-hint code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-all;
+}
+
 .status-ok { color: #166534; font-weight: 600; }
 .status-error { color: #991B1B; font-weight: 600; }
+.status-vpcsc { color: #92400E; font-weight: 600; }
 
 /* ----- connection manager (sources) ----- */
 .section-title {
