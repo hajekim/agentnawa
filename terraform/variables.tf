@@ -43,3 +43,27 @@ variable "config_bucket_name" {
   type        = string
   default     = ""
 }
+
+variable "enable_antigravity" {
+  description = "Enable the Antigravity usage tab: grant the runtime SA read access to the central BigQuery inference-response dataset and pass its env vars. Requires the log sink from terraform/setup/setup_antigravity_sink.sh (org-admin, run once). Default off so a bare apply works for evaluation."
+  type        = bool
+  default     = false
+}
+
+variable "antigravity_bq_project" {
+  description = "Project holding the central BigQuery inference-response dataset (CENTRAL_PROJECT). Required when enable_antigravity is true."
+  type        = string
+  default     = ""
+}
+
+variable "antigravity_bq_dataset" {
+  description = "BigQuery dataset holding the businessaicode_googleapis_com_inference_response table."
+  type        = string
+  default     = "antigravity_monitoring"
+}
+
+variable "antigravity_bq_location" {
+  description = "BigQuery location of the dataset (e.g. asia-northeast3). Empty lets the client resolve it."
+  type        = string
+  default     = ""
+}

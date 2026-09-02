@@ -19,6 +19,14 @@ const licState = {
     sortKey: 'utilization_rate', sortDir: 'desc',
 };
 
+// Usage view (Antigravity): lazy-loaded from /api/antigravity/metrics. `days` refetches;
+// `project` scopes the KPIs/chart/table; `metric` toggles chart series; q filters the table.
+const usageState = {
+    data: null, days: 30, project: '', metric: 'tokens', q: '',
+    sortKey: 'total_tokens', sortDir: 'desc',
+};
+let usageChart = null;  // singleton Chart.js instance; destroyed + recreated on every render
+
 async function loadAgents() {
     const res = await fetch('/api/agents');
     const data = await res.json();
@@ -107,15 +115,19 @@ function keyActivate(handler) {
 function route() {
     closeFlyout();  // flyout lives outside #view-root; dismiss it when switching views
     const hash = (location.hash || '#/agents').replace('#/', '');
-    state.view = ['overview', 'agents', 'licenses', 'sources'].includes(hash) ? hash : 'agents';
+    state.view = ['overview', 'agents', 'licenses', 'usage', 'sources'].includes(hash) ? hash : 'agents';
     document.querySelectorAll('.nav-item').forEach(el => {
         const active = el.dataset.view === state.view;
         el.classList.toggle('active', active);
         if (active) el.setAttribute('aria-current', 'page');
         else el.removeAttribute('aria-current');
     });
+    // The Chart.js instance sits on a canvas inside #view-root; leaving usage
+    // detaches that canvas, so destroy it here or it leaks until we return.
+    if (state.view !== 'usage' && usageChart) { usageChart.destroy(); usageChart = null; }
     if (state.view === 'overview') renderOverview();
     else if (state.view === 'licenses') renderLicenses();
+    else if (state.view === 'usage') renderUsage();
     else if (state.view === 'sources') renderSources();
     else renderAgents();
 }
@@ -715,6 +727,260 @@ const LIC_EXPORT_COLS = ['project_id', 'license_config_id', 'subscription_tier',
 function exportLicensesCSV() {
     const rows = licFiltered().map(p => LIC_EXPORT_COLS.map(k => csvCell(p[k])).join(','));
     download([LIC_EXPORT_COLS.join(','), ...rows].join('\r\n'), 'licenses.csv', 'text/csv');
+}
+
+/* ---------- usage view: Antigravity inference telemetry ---------- */
+// Compact numbers for tiles/bars/chart-axis; the table keeps exact toLocaleString values.
+function fmtNum(n) {
+    n = n || 0;
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+    return String(n);
+}
+
+// distinct color per stacked project series (cycles if projects > palette)
+const USAGE_COLORS = ['#4F46E5', '#0EA5E9', '#22C55E', '#F59E0B', '#EF4444', '#A855F7', '#14B8A6', '#EC4899'];
+
+function agUser(u) { return (u || '').replace(/^user:/, '') || '—'; }
+
+async function loadUsage() {
+    const res = await fetch('/api/antigravity/metrics?days=' + usageState.days);
+    usageState.data = await res.json();
+}
+
+async function renderUsage() {
+    const root = document.getElementById('view-root');
+    if (!usageState.data) {
+        root.innerHTML = `<div class="loading">사용량을 불러오는 중…</div>`;
+        try { await loadUsage(); }
+        catch (error) {
+            root.innerHTML = `<div class="loading">사용량을 불러오지 못했습니다: ${escapeHtml(error.message)}</div>`;
+            return;
+        }
+    }
+    const projectIds = usageState.data.projects.map(p => p.project_id).sort();
+    if (usageState.project && !projectIds.includes(usageState.project)) usageState.project = '';  // stale selection
+    root.innerHTML = `
+        <div class="view-header view-header--row">
+            <div>
+                <h1>Usage</h1>
+                <p>등록된 프로젝트의 Antigravity 추론·토큰 사용량입니다.</p>
+            </div>
+            <div class="header-actions">
+                <button id="ag-refresh" class="hbtn" aria-label="새로고침"><i class="fas fa-rotate-right"></i></button>
+                <button id="ag-csv" class="hbtn" aria-label="CSV로 내보내기">CSV</button>
+            </div>
+        </div>
+        ${usageMessageHTML()}
+        ${usageHealthHTML()}
+        <div id="ag-tiles"></div>
+        <div class="filter-bar">
+            <select id="ag-project" class="filter-select" aria-label="프로젝트 필터">
+                <option value="">전체 (통합)</option>${opts(projectIds)}
+            </select>
+            <select id="ag-range" class="filter-select" aria-label="기간">
+                <option value="7">최근 7일</option>
+                <option value="30">최근 30일</option>
+                <option value="90">최근 90일</option>
+            </select>
+            <select id="ag-metric" class="filter-select" aria-label="지표">
+                <option value="tokens">토큰</option>
+                <option value="inferences">추론</option>
+            </select>
+            <input id="ag-search" class="search-input" type="search" placeholder="사용자·프로젝트 검색" aria-label="사용자 검색">
+        </div>
+        <div class="chart-card">
+            <h3>일별 추세</h3>
+            <div class="chart-wrap"><canvas id="ag-chart"></canvas></div>
+        </div>
+        <div class="breakdown"><h3>프로젝트별 토큰 사용량</h3><div id="ag-bars"></div></div>
+        <div class="result-count" id="ag-count"></div>
+        <div id="ag-table"></div>`;
+
+    const proj = root.querySelector('#ag-project');
+    const rng = root.querySelector('#ag-range');
+    const met = root.querySelector('#ag-metric');
+    const srch = root.querySelector('#ag-search');
+    proj.value = usageState.project; rng.value = String(usageState.days);
+    met.value = usageState.metric; srch.value = usageState.q;
+    proj.addEventListener('change', () => { usageState.project = proj.value; updateUsageView(); });
+    rng.addEventListener('change', () => { usageState.days = Number(rng.value); onUsageRefresh(); });
+    met.addEventListener('change', () => { usageState.metric = met.value; updateUsageView(); });
+    srch.addEventListener('input', () => { usageState.q = srch.value; updateUsageTable(); });
+    root.querySelector('#ag-refresh').addEventListener('click', onUsageRefresh);
+    root.querySelector('#ag-csv').addEventListener('click', exportUsageCSV);
+    const tableEl = root.querySelector('#ag-table');
+    tableEl.addEventListener('click', onUsageTableClick);
+    tableEl.addEventListener('keydown', keyActivate(onUsageTableClick));
+
+    updateUsageView();
+}
+
+// message is an info banner (not-configured / no-logs); errors surface via usageHealthHTML.
+function usageMessageHTML() {
+    const m = usageState.data.message;
+    return m ? `<div class="result-count">${escapeHtml(m)}</div>` : '';
+}
+
+function usageHealthHTML() {
+    const probs = (usageState.data.providers || []).filter(p => p.status !== 'ok');
+    if (!probs.length) return '';
+    return `<div class="provider-health">${probs.map(p =>
+        `<span class="health-error">⚠ ${escapeHtml(p.label || p.name)} 사용량 조회 실패: ${escapeHtml(p.error || '')}</span>`
+    ).join('')}</div>`;
+}
+
+// project rows in scope (전체=all / 선택=one); drives bars + chart series.
+function usageScopeProjects() {
+    const all = usageState.data.projects;
+    return usageState.project ? all.filter(p => p.project_id === usageState.project) : all;
+}
+
+// KPI scope: 전체 uses the backend summary (distinct active_users can't be re-derived
+// client-side across projects); a selected project uses that project's aggregate row.
+function usageSummary() {
+    if (!usageState.project) {
+        const s = usageState.data.summary;
+        return { inferences: s.total_inferences, tokens: s.total_tokens,
+                 users: s.active_users, projects: s.monitored_projects };
+    }
+    const p = usageState.data.projects.find(x => x.project_id === usageState.project);
+    return p ? { inferences: p.total_requests, tokens: p.total_tokens, users: p.active_users, projects: 1 }
+             : { inferences: 0, tokens: 0, users: 0, projects: 0 };
+}
+
+function usageBarsHTML() {
+    const rows = usageScopeProjects();
+    const total = rows.reduce((a, p) => a + (p.total_tokens || 0), 0);
+    if (!rows.length || total <= 0) return '';
+    return rows.slice().sort((a, b) => b.total_tokens - a.total_tokens).map(p => {
+        const pct = Math.round(p.total_tokens / total * 100);
+        return `<div class="bar-row">
+            <span class="bar-label" title="${escapeHtml(p.project_id)}">${escapeHtml(p.project_id)}</span>
+            <span class="bar-track"><span class="bar-fill" style="width:${Math.min(100, pct)}%"></span></span>
+            <span class="bar-count">${pct}%</span>
+        </div>`;
+    }).join('');
+}
+
+// Stacked daily trend: tokens as area, inferences as bars; one series per project in scope.
+function renderUsageChart() {
+    const canvas = document.getElementById('ag-chart');
+    if (!canvas || typeof Chart === 'undefined') return;  // CDN unreachable → skip chart, rest works
+    if (usageChart) { usageChart.destroy(); usageChart = null; }
+    const daily = usageState.data.daily || [];
+    const labels = daily.map(d => d.date);
+    const isTokens = usageState.metric === 'tokens';
+    const key = isTokens ? 'tokens' : 'requests';
+    const pids = usageScopeProjects().map(p => p.project_id);
+    const datasets = (pids.length ? pids : ['(전체)']).map((pid, i) => {
+        const color = USAGE_COLORS[i % USAGE_COLORS.length];
+        const data = pids.length
+            ? daily.map(d => (d.breakdown[pid] || {})[key] || 0)
+            : daily.map(d => d[key] || 0);
+        return {
+            label: pid, data, stack: 'usage',
+            backgroundColor: isTokens ? color + '55' : color,
+            borderColor: color, borderWidth: isTokens ? 2 : 0,
+            fill: isTokens, tension: 0.3, pointRadius: 0,
+        };
+    });
+    usageChart = new Chart(canvas, {
+        type: isTokens ? 'line' : 'bar',
+        data: { labels, datasets },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                x: { stacked: true, grid: { display: false } },
+                y: { stacked: true, beginAtZero: true, ticks: { callback: v => isTokens ? fmtNum(v) : v } },
+            },
+            plugins: { legend: { display: datasets.length > 1 } },
+        },
+    });
+}
+
+function updateUsageView() {
+    const s = usageSummary();
+    document.getElementById('ag-tiles').innerHTML = kpiHTML([
+        ['총 추론', s.inferences.toLocaleString()],
+        ['총 토큰', fmtNum(s.tokens)],
+        ['활성 사용자', s.users.toLocaleString()],
+        ['모니터링 프로젝트', s.projects.toLocaleString()],
+    ]);
+    document.getElementById('ag-bars').innerHTML =
+        usageBarsHTML() || `<div class="result-count">표시할 사용량이 없습니다.</div>`;
+    renderUsageChart();
+    updateUsageTable();
+}
+
+// Top users, scoped by project + text-filtered + sorted (numeric-aware, mirrors licFiltered).
+function usageFilteredUsers() {
+    let rows = usageState.data.top_users || [];
+    if (usageState.project) rows = rows.filter(u => u.project_id === usageState.project);
+    const q = usageState.q.trim().toLowerCase();
+    if (q) rows = rows.filter(u =>
+        (u.user_id || '').toLowerCase().includes(q) ||
+        (u.project_id || '').toLowerCase().includes(q));
+    const k = usageState.sortKey, dir = usageState.sortDir === 'asc' ? 1 : -1;
+    return rows.slice().sort((a, b) => {
+        const va = a[k], vb = b[k];
+        if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir;
+        return String(va ?? '').localeCompare(String(vb ?? ''), undefined, { numeric: true }) * dir;
+    });
+}
+
+function updateUsageTable() {
+    const rows = usageFilteredUsers();
+    document.getElementById('ag-count').textContent = `${rows.length}명 사용자`;
+    document.getElementById('ag-table').innerHTML = usageTableHTML(rows);
+}
+
+const AG_TABLE_COLS = [
+    { k: 'user_id', label: 'User' },
+    { k: 'project_id', label: 'Project' },
+    { k: 'total_requests', label: 'Inferences' },
+    { k: 'total_tokens', label: 'Tokens' },
+    { k: 'primary_model', label: 'Model' },
+    { k: 'last_active', label: 'Last active' },
+];
+
+function usageTableHTML(rows) {
+    if (!rows.length) return `<div class="loading">조건에 맞는 사용자가 없습니다.</div>`;
+    const head = AG_TABLE_COLS.map(col =>
+        `<th data-sort="${col.k}" role="button" tabindex="0" aria-sort="${usageState.sortKey === col.k ? (usageState.sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}">${col.label} <span class="sort-ind">${usageState.sortKey === col.k ? (usageState.sortDir === 'asc' ? '▲' : '▼') : ''}</span></th>`).join('');
+    const body = rows.map(u => `<tr>
+        <td class="name-cell">${escapeHtml(agUser(u.user_id))}</td>
+        <td>${escapeHtml(u.project_id)}</td>
+        <td>${(u.total_requests || 0).toLocaleString()}</td>
+        <td>${(u.total_tokens || 0).toLocaleString()}</td>
+        <td>${escapeHtml(u.primary_model || '—')}</td>
+        <td>${escapeHtml((u.last_active || '').slice(0, 16) || '—')}</td>
+    </tr>`).join('');
+    return `<table class="agent-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function onUsageTableClick(e) {
+    const th = e.target.closest('th[data-sort]');
+    if (!th) return;
+    const k = th.dataset.sort;
+    if (usageState.sortKey === k) usageState.sortDir = usageState.sortDir === 'asc' ? 'desc' : 'asc';
+    else { usageState.sortKey = k; usageState.sortDir = 'asc'; }
+    updateUsageTable();
+}
+
+async function onUsageRefresh() {
+    const btn = document.getElementById('ag-refresh');
+    if (btn) { btn.disabled = true; btn.classList.add('loading'); }
+    try { await loadUsage(); } catch (e) { /* keep current data on failure */ }
+    renderUsage();
+}
+
+const AG_EXPORT_COLS = ['user_id', 'project_id', 'total_requests', 'total_tokens', 'primary_model', 'last_active'];
+
+function exportUsageCSV() {
+    const rows = usageFilteredUsers().map(u => AG_EXPORT_COLS.map(k => csvCell(u[k])).join(','));
+    download([AG_EXPORT_COLS.join(','), ...rows].join('\r\n'), 'antigravity-usage.csv', 'text/csv');
 }
 
 /* ---------- sources view: connection manager ---------- */

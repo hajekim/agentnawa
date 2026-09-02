@@ -188,3 +188,77 @@ def test_licenses_skips_vertex(client, monkeypatch):
                         lambda pid, location="global": (_ for _ in ()).throw(AssertionError("vertex queried")))
     body = client.get("/api/licenses").json()
     assert body["projects"] == [] and body["providers"] == []
+
+
+# --- /api/antigravity/metrics -----------------------------------------------
+
+def test_antigravity_scope_gemini_only(client, monkeypatch):
+    # scope = connected gemini project_ids; vertex connections are excluded
+    client.post("/api/connections", json={"project_id": "g1", "app_id": "a"})
+    client.post("/api/connections", json={"provider": "vertex", "project_id": "vp", "region": "us-central1"})
+    monkeypatch.setenv("CENTRAL_PROJECT", "central")
+    seen = {}
+
+    def fake_usage(project_ids, days):
+        seen.update(project_ids=list(project_ids), days=days)
+        return providers._empty_usage()
+
+    monkeypatch.setattr(main.providers, "list_antigravity_usage", fake_usage)
+    body = client.get("/api/antigravity/metrics").json()
+    assert seen["project_ids"] == ["g1"] and seen["days"] == 30  # vertex excluded, default range
+    assert body["days"] == 30 and body["providers"][0]["name"] == "antigravity"
+    # configured but no rows -> the no-logs banner (not the unconfigured one)
+    assert body["message"] == "선택한 기간에 Antigravity 로그가 없습니다."
+
+
+def test_antigravity_message_none_with_data(client, monkeypatch):
+    # configured + rows present -> no banner
+    client.post("/api/connections", json={"project_id": "g1", "app_id": "a"})
+    monkeypatch.setenv("CENTRAL_PROJECT", "central")
+    usage = {**providers._empty_usage(), "summary": {**providers._empty_usage()["summary"],
+                                                     "total_inferences": 3}}
+    monkeypatch.setattr(main.providers, "list_antigravity_usage", lambda project_ids, days: usage)
+    assert client.get("/api/antigravity/metrics").json()["message"] is None
+
+
+def test_antigravity_dedupes_shared_project(client, monkeypatch):
+    client.post("/api/connections", json={"project_id": "p", "app_id": "a1"})
+    client.post("/api/connections", json={"project_id": "p", "app_id": "a2"})
+    monkeypatch.setenv("CENTRAL_PROJECT", "central")
+    seen = {}
+    monkeypatch.setattr(main.providers, "list_antigravity_usage",
+                        lambda project_ids, days: seen.update(pids=list(project_ids)) or providers._empty_usage())
+    client.get("/api/antigravity/metrics")
+    assert seen["pids"] == ["p"]  # shared project counted once
+
+
+def test_antigravity_unconfigured_message(client, monkeypatch):
+    # no CENTRAL_PROJECT: real entrypoint returns zeros (no BigQuery), banner explains why
+    client.post("/api/connections", json={"project_id": "g1", "app_id": "a"})
+    monkeypatch.delenv("CENTRAL_PROJECT", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_BQ_PROJECT", raising=False)
+    body = client.get("/api/antigravity/metrics").json()
+    assert "CENTRAL_PROJECT" in body["message"]
+    assert body["summary"]["total_inferences"] == 0 and body["providers"][0]["status"] == "ok"
+
+
+def test_antigravity_never_500_on_error(client, monkeypatch):
+    client.post("/api/connections", json={"project_id": "g1", "app_id": "a"})
+    monkeypatch.setenv("CENTRAL_PROJECT", "central")
+    monkeypatch.setattr(main.providers, "list_antigravity_usage",
+                        lambda project_ids, days: (_ for _ in ()).throw(RuntimeError("bq boom")))
+    r = client.get("/api/antigravity/metrics")
+    assert r.status_code == 200  # a hard BigQuery error must NOT 500
+    body = r.json()
+    assert body["providers"][0]["status"] == "error" and "bq boom" in body["providers"][0]["error"]
+    assert body["summary"]["total_inferences"] == 0  # degraded to zeros
+
+
+def test_antigravity_days_clamped(client, monkeypatch):
+    client.post("/api/connections", json={"project_id": "g1", "app_id": "a"})
+    monkeypatch.setenv("CENTRAL_PROJECT", "central")
+    seen = {}
+    monkeypatch.setattr(main.providers, "list_antigravity_usage",
+                        lambda project_ids, days: seen.update(days=days) or providers._empty_usage())
+    assert client.get("/api/antigravity/metrics?days=500").json()["days"] == 90 and seen["days"] == 90
+    assert client.get("/api/antigravity/metrics?days=0").json()["days"] == 1 and seen["days"] == 1

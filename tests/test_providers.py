@@ -1,5 +1,7 @@
 """Unit tests for the provider adapters: type mapping, HTTP retry, list parsing,
 and the connection->provider registry. All network is monkeypatched out."""
+from datetime import datetime, timedelta, timezone
+
 import providers
 
 
@@ -206,3 +208,96 @@ def test_list_license_configs_stats_optional(monkeypatch):
     rows = providers.list_license_configs("p")
     assert rows[0]["allocated_seats"] == 50 and rows[0]["assigned_count"] == 0
     assert rows[0]["status"] == "UNASSIGNED"
+
+
+# --- Antigravity usage aggregation ------------------------------------------
+# Rows fed to _aggregate_usage are already deduped by the SQL (QUALIFY); these
+# tests cover the in-memory aggregation, not the dedup.
+
+def _agy_row(pid, uid, model, tokens, ts):
+    return {"project_id": pid, "user_id": uid, "model": model,
+            "total_token_count": tokens, "timestamp": ts}
+
+
+def test_aggregate_usage_totals_projects_daily_users():
+    rows = [
+        _agy_row("p1", "user:a", "gemini", 100, datetime(2026, 8, 1, 10, tzinfo=timezone.utc)),
+        _agy_row("p1", "user:a", "gemini", 50, datetime(2026, 8, 1, 12, tzinfo=timezone.utc)),
+        _agy_row("p1", "user:b", "flash", 10, datetime(2026, 8, 2, 9, tzinfo=timezone.utc)),
+        _agy_row("p2", "user:a", "gemini", 200, datetime(2026, 8, 2, 9, tzinfo=timezone.utc)),
+    ]
+    agg = providers._aggregate_usage(rows)
+
+    s = agg["summary"]
+    assert s["total_inferences"] == 4
+    assert s["total_tokens"] == 360
+    assert s["active_users"] == 2          # user:a + user:b, distinct across projects
+    assert s["monitored_projects"] == 2
+    assert s["avg_tokens_per_request"] == 90.0
+
+    # projects sorted by tokens desc: p2 (200) before p1 (160)
+    assert [p["project_id"] for p in agg["projects"]] == ["p2", "p1"]
+    p1 = next(p for p in agg["projects"] if p["project_id"] == "p1")
+    assert p1["total_requests"] == 3 and p1["total_tokens"] == 160
+    assert p1["active_users"] == 2 and p1["primary_model"] == "gemini"  # 2 gemini > 1 flash
+
+    daily = {d["date"]: d for d in agg["daily"]}
+    assert [d["date"] for d in agg["daily"]] == ["2026-08-01", "2026-08-02"]  # ascending
+    assert daily["2026-08-01"]["requests"] == 2 and daily["2026-08-01"]["tokens"] == 150
+    assert daily["2026-08-01"]["active_users"] == 1  # user:a twice in one day -> distinct 1
+    assert daily["2026-08-01"]["breakdown"]["p1"]["requests"] == 2
+    assert daily["2026-08-02"]["active_users"] == 2
+    assert daily["2026-08-02"]["breakdown"]["p2"]["tokens"] == 200
+
+    # top_users are per (project, user); user:a appears once per project, tokens desc
+    assert [(u["user_id"], u["project_id"], u["total_tokens"]) for u in agg["top_users"]] == [
+        ("user:a", "p2", 200), ("user:a", "p1", 150), ("user:b", "p1", 10)]
+    assert agg["top_users"][0]["last_active"].startswith("2026-08-02")
+    # multi-row user keeps the MOST-RECENT timestamp (p1/user:a: 10:00 and 12:00)
+    assert agg["top_users"][1]["last_active"].startswith("2026-08-01 12")
+
+
+def test_aggregate_usage_excludes_empty_user():
+    rows = [_agy_row("p1", "", "m", 5, datetime(2026, 8, 1, tzinfo=timezone.utc))]
+    agg = providers._aggregate_usage(rows)
+    assert agg["top_users"] == []                       # anonymous rows never surface as a user
+    assert agg["summary"]["active_users"] == 0          # empty uid not counted
+    assert agg["projects"][0]["total_requests"] == 1    # but the request still counts
+
+
+def test_aggregate_usage_empty_equals_empty_usage():
+    assert providers._aggregate_usage([]) == providers._empty_usage()
+
+
+# --- Antigravity usage entrypoint -------------------------------------------
+
+def test_list_antigravity_usage_unconfigured(monkeypatch):
+    monkeypatch.delenv("CENTRAL_PROJECT", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_BQ_PROJECT", raising=False)
+    # no central project -> zeros without touching BigQuery
+    assert providers.list_antigravity_usage(["p1"]) == providers._empty_usage()
+
+
+def test_list_antigravity_usage_no_projects(monkeypatch):
+    monkeypatch.setenv("CENTRAL_PROJECT", "central")
+    assert providers.list_antigravity_usage([]) == providers._empty_usage()
+
+
+def test_list_antigravity_usage_runs_query(monkeypatch):
+    monkeypatch.setenv("CENTRAL_PROJECT", "central")
+    monkeypatch.delenv("ANTIGRAVITY_BQ_DATASET", raising=False)
+    seen = {}
+
+    def fake_run(table_ref, since, project_ids, project, location):
+        seen.update(table_ref=table_ref, since=since, project_ids=list(project_ids), project=project)
+        return [_agy_row("p1", "user:a", "m", 42, datetime(2026, 8, 1, tzinfo=timezone.utc))]
+
+    monkeypatch.setattr(providers, "_run_bq", fake_run)
+    out = providers.list_antigravity_usage(["p1", "p2"], days=7)
+    assert out["summary"]["total_inferences"] == 1 and out["summary"]["total_tokens"] == 42
+    assert seen["project_ids"] == ["p1", "p2"] and seen["project"] == "central"
+    # default dataset baked into the fully-qualified table ref
+    assert seen["table_ref"] == "central.antigravity_monitoring.businessaicode_googleapis_com_inference_response"
+    # days -> query window: `since` is ~7 days before now (catches a days/hours unit slip)
+    window = datetime.now(timezone.utc) - seen["since"]
+    assert abs(window - timedelta(days=7)) < timedelta(seconds=5)

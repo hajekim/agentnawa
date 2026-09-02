@@ -8,6 +8,7 @@ import dataclasses
 import os
 import secrets
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 import google.auth
@@ -266,6 +267,152 @@ def list_license_configs(project_id: str, location: str = "global") -> list[dict
             "end_date": _license_date(cfg.get("endDate")),
         })
     return out
+
+
+# --- Antigravity usage telemetry (BigQuery inference_response sink) -----------
+# Usage is telemetry, not agents, so this is a plain function, not a provider. It
+# reads the central BigQuery sink table populated by an org/folder log sink, scoped
+# to the caller's project_ids. Aggregation mirrors the ge-monitoring reference.
+
+_AGY_QUERY = """
+WITH deduped AS (
+    SELECT
+        timestamp,
+        COALESCE(REGEXP_EXTRACT(logName, r'projects/([^/]+)/logs'), resource.labels.resource_container, '') AS project_id,
+        COALESCE(labels.user_id, '') AS user_id,
+        COALESCE(labels.model, '') AS model,
+        COALESCE(SAFE_CAST(jsonpayload_v1_inferenceresponselog.metadata.totaltokencount AS INT64), 0) AS total_token_count
+    FROM `{table_ref}`
+    WHERE timestamp >= @since
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY COALESCE(labels.request_id, insertId) ORDER BY timestamp DESC
+    ) = 1
+)
+SELECT timestamp, project_id, user_id, model, total_token_count
+FROM deduped
+WHERE project_id IN UNNEST(@project_ids)
+ORDER BY timestamp DESC
+"""
+
+
+def _agy_bq_config() -> tuple[str, str, str | None]:
+    return (
+        os.getenv("CENTRAL_PROJECT") or os.getenv("ANTIGRAVITY_BQ_PROJECT") or "",
+        os.getenv("ANTIGRAVITY_BQ_DATASET") or "antigravity_monitoring",
+        os.getenv("ANTIGRAVITY_BQ_LOCATION") or None,
+    )
+
+
+def _empty_usage() -> dict:
+    return {
+        "summary": {"total_inferences": 0, "total_tokens": 0, "active_users": 0,
+                    "monitored_projects": 0, "avg_tokens_per_request": 0.0},
+        "projects": [], "daily": [], "top_users": [],
+    }
+
+
+def _run_bq(table_ref: str, since, project_ids: list[str], project: str, location: str | None) -> list[dict]:
+    """Run the dedup query and return raw rows. Seam for tests to monkeypatch."""
+    from google.cloud import bigquery
+    client = bigquery.Client(project=project)
+    job_config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("since", "TIMESTAMP", since),
+        bigquery.ArrayQueryParameter("project_ids", "STRING", list(project_ids)),
+    ])
+    job = client.query(_AGY_QUERY.format(table_ref=table_ref), job_config=job_config, location=location)
+    return [dict(row) for row in job.result()]
+
+
+def _primary_model(models: dict) -> str:
+    return max(models, key=models.get) if models else ""
+
+
+def _aggregate_usage(rows: list[dict]) -> dict:
+    # ponytail: aggregates all deduped rows in memory; push GROUP BY into SQL if an
+    # org's row volume ever makes this the bottleneck.
+    users: set = set()
+    projects: dict = {}
+    per_user: dict = {}
+    daily: dict = {}
+    total_tokens = 0
+    for r in rows:
+        tk = int(r.get("total_token_count") or 0)
+        total_tokens += tk
+        pid = str(r.get("project_id") or "")
+        uid = str(r.get("user_id") or "")
+        model = str(r.get("model") or "")
+        ts = r.get("timestamp")
+        ts_str = str(ts)
+        day = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else ts_str[:10]
+        if uid:
+            users.add(uid)
+        pr = projects.setdefault(pid, {"requests": 0, "tokens": 0, "users": set(), "models": {}})
+        pr["requests"] += 1
+        pr["tokens"] += tk
+        if uid:
+            pr["users"].add(uid)
+        if model:
+            pr["models"][model] = pr["models"].get(model, 0) + 1
+        ud = per_user.setdefault((pid, uid), {"project_id": pid, "user_id": uid, "requests": 0,
+                                              "tokens": 0, "models": {}, "last_active": ts_str})
+        ud["requests"] += 1
+        ud["tokens"] += tk
+        if model:
+            ud["models"][model] = ud["models"].get(model, 0) + 1
+        if ts_str > ud["last_active"]:  # ISO strings sort lexically == chronologically
+            ud["last_active"] = ts_str
+        dd = daily.setdefault(day, {"requests": 0, "tokens": 0, "users": set(), "projects": {}})
+        dd["requests"] += 1
+        dd["tokens"] += tk
+        if uid:
+            dd["users"].add(uid)
+        if pid:
+            dp = dd["projects"].setdefault(pid, {"requests": 0, "tokens": 0, "users": set()})
+            dp["requests"] += 1
+            dp["tokens"] += tk
+            if uid:
+                dp["users"].add(uid)
+    project_rows = sorted(
+        ({"project_id": pid, "total_requests": p["requests"], "total_tokens": p["tokens"],
+          "active_users": len(p["users"]), "primary_model": _primary_model(p["models"])}
+         for pid, p in projects.items()),
+        key=lambda x: x["total_tokens"], reverse=True)
+    top_users = sorted(
+        ({"user_id": u["user_id"], "project_id": u["project_id"], "total_requests": u["requests"],
+          "total_tokens": u["tokens"], "primary_model": _primary_model(u["models"]),
+          "last_active": u["last_active"]}
+         for u in per_user.values() if u["user_id"]),
+        key=lambda x: x["total_tokens"], reverse=True)
+    daily_rows = [
+        {"date": day, "requests": daily[day]["requests"], "tokens": daily[day]["tokens"],
+         "active_users": len(daily[day]["users"]),
+         "breakdown": {pid: {"requests": v["requests"], "tokens": v["tokens"], "users": len(v["users"])}
+                       for pid, v in daily[day]["projects"].items()}}
+        for day in sorted(daily)]
+    total_inf = len(rows)
+    return {
+        "summary": {"total_inferences": total_inf, "total_tokens": total_tokens,
+                    "active_users": len(users), "monitored_projects": len(projects),
+                    "avg_tokens_per_request": round(total_tokens / max(total_inf, 1), 1)},
+        "projects": project_rows, "daily": daily_rows, "top_users": top_users,
+    }
+
+
+def list_antigravity_usage(project_ids: list[str], days: int = 30) -> dict:
+    """Antigravity inference telemetry for project_ids over the last `days`.
+
+    Reads the central BigQuery inference_response sink table (env CENTRAL_PROJECT /
+    ANTIGRAVITY_BQ_DATASET / ANTIGRAVITY_BQ_LOCATION), dedupes by request_id, and
+    aggregates. Scope is the caller's project_ids (WHERE project_id IN ...). Returns
+    zeroed aggregates when unconfigured or when the table has no rows; raises on a
+    hard BigQuery error so the caller can surface it as health.
+    """
+    bq_project, dataset, location = _agy_bq_config()
+    if not bq_project or not project_ids:
+        return _empty_usage()
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    table_ref = f"{bq_project}.{dataset}.businessaicode_googleapis_com_inference_response"
+    return _aggregate_usage(_run_bq(table_ref, since, project_ids, bq_project, location))
 
 
 def registry() -> list[AgentProvider]:

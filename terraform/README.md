@@ -59,6 +59,7 @@ within the VPC, put it behind a load balancer, enable IAP (see below), or relax
 - `invoker_members` — who may call the service, e.g. `["group:agents@example.com"]`.
 - `enable_iap` — front the service with Identity-Aware Proxy (default `false`).
 - `config_bucket_name` — override the default `PROJECT-agent-nawa-config`.
+- `enable_antigravity` — turn on the usage tab (default `false`); see below.
 
 ## Granting cross-project access
 
@@ -73,6 +74,35 @@ Terraform grants the `service_account_email` output the reader roles in those
 projects automatically. To add a project later, append it to
 `connected_project_ids` and re-apply — the per-project IAM uses `for_each`, so
 only the new bindings are added.
+
+## Enabling the Antigravity usage tab
+
+The usage tab reads a central BigQuery table fed by a Cloud Logging sink. Two
+parts, split by who owns them:
+
+1. **The log sink (org-admin, once).** It touches folder/org-level logging and is
+   billable, so it is **not** part of `terraform apply`. Run
+   [`setup/setup_antigravity_sink.sh`](setup/setup_antigravity_sink.sh) as someone
+   with logging-admin on the folder/org and BigQuery-admin on the central project:
+
+   ```bash
+   CENTRAL_PROJECT=my-central-proj FOLDER_ID=123456789012 \
+     ./setup/setup_antigravity_sink.sh
+   ```
+
+   It creates the dataset, the sink, and grants the sink's writer identity
+   BigQuery write.
+
+2. **Read access + env (this module).** Set `-var enable_antigravity=true -var
+   antigravity_bq_project=my-central-proj`. Terraform enables the BigQuery API,
+   grants the runtime service account **read-only** `bigquery.dataViewer` +
+   `bigquery.jobUser` on that project, and injects `CENTRAL_PROJECT` /
+   `ANTIGRAVITY_BQ_DATASET` / `ANTIGRAVITY_BQ_LOCATION` into the container.
+   Optional: `antigravity_bq_dataset` (default `antigravity_monitoring`),
+   `antigravity_bq_location`.
+
+Left at the default (`false`), none of this is created and the tab shows a
+"not configured" notice instead of erroring.
 
 ## Enabling IAP
 

@@ -10,7 +10,20 @@ locals {
     "artifactregistry.googleapis.com",
     "cloudresourcemanager.googleapis.com",
   ]
-  services = var.enable_iap ? concat(local.base_services, ["iap.googleapis.com"]) : local.base_services
+  services = concat(
+    local.base_services,
+    var.enable_iap ? ["iap.googleapis.com"] : [],
+    var.enable_antigravity ? ["bigquery.googleapis.com"] : [],
+  )
+
+  # Antigravity usage tab env, injected only when enabled. Location is optional.
+  antigravity_env = var.enable_antigravity ? merge(
+    {
+      CENTRAL_PROJECT        = var.antigravity_bq_project
+      ANTIGRAVITY_BQ_DATASET = var.antigravity_bq_dataset
+    },
+    var.antigravity_bq_location != "" ? { ANTIGRAVITY_BQ_LOCATION = var.antigravity_bq_location } : {},
+  ) : {}
 
   # The service account reads Gemini agents from the host project plus every
   # connected project, so it needs both roles in each. setproduct keeps the
@@ -80,6 +93,24 @@ resource "google_storage_bucket_iam_member" "config_admin" {
   member = "serviceAccount:${google_service_account.svc.email}"
 }
 
+# ...and (when the usage tab is on) read + run query jobs against the central
+# BigQuery inference-response dataset. Read-only: the log sink writes it, not us.
+resource "google_project_iam_member" "antigravity_bq" {
+  for_each = var.enable_antigravity ? toset(["roles/bigquery.dataViewer", "roles/bigquery.jobUser"]) : toset([])
+  project  = var.antigravity_bq_project
+  role     = each.value
+  member   = "serviceAccount:${google_service_account.svc.email}"
+
+  # An empty project would silently bind these roles to the host project (the
+  # provider default) and leave CENTRAL_PROJECT="" so the tab never queries.
+  lifecycle {
+    precondition {
+      condition     = var.antigravity_bq_project != ""
+      error_message = "enable_antigravity=true requires antigravity_bq_project (the central BigQuery project)."
+    }
+  }
+}
+
 # (f) The service. Runs as the SA above; auth to Google APIs is host ADC.
 resource "google_cloud_run_v2_service" "svc" {
   project  = var.project_id
@@ -107,6 +138,15 @@ resource "google_cloud_run_v2_service" "svc" {
         name  = "CONFIG_BUCKET"
         value = google_storage_bucket.config.name
       }
+
+      # Antigravity usage tab config (CENTRAL_PROJECT etc.), only when enabled.
+      dynamic "env" {
+        for_each = local.antigravity_env
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
     }
   }
 
@@ -114,6 +154,7 @@ resource "google_cloud_run_v2_service" "svc" {
     google_project_service.enabled,
     google_project_iam_member.agent_access,
     google_storage_bucket_iam_member.config_admin,
+    google_project_iam_member.antigravity_bq,
   ]
 }
 

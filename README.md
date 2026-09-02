@@ -55,6 +55,20 @@ For back-compat you can still seed a connection from environment variables. If n
 
 If no connection is configured, the app still runs and returns an empty list, so a missing variable will not crash it.
 
+## Usage telemetry (Antigravity)
+
+The **사용량** tab shows Antigravity inference usage — inferences, tokens, active users, a daily trend chart, per-project breakdown, and top users — for the projects you have connected. It reads a central BigQuery table populated by a Cloud Logging sink (`businessaicode.googleapis.com/inference_response`), scoped to your connected Gemini project IDs. Aggregation happens server-side; the browser only ever receives compact totals, never raw rows.
+
+It is off until you point it at the central dataset with these env vars:
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `CENTRAL_PROJECT` | yes | — | Project holding the central BigQuery dataset. (`ANTIGRAVITY_BQ_PROJECT` is accepted as an alias.) |
+| `ANTIGRAVITY_BQ_DATASET` | no | `antigravity_monitoring` | Dataset holding the `businessaicode_googleapis_com_inference_response` table. |
+| `ANTIGRAVITY_BQ_LOCATION` | no | client default | BigQuery location of the dataset (e.g. `asia-northeast3`). |
+
+Unset, the tab loads and explains that it is not configured — it never errors. The log sink itself is a one-time, org-admin step (it touches folder/org-level logging): see [`terraform/setup/setup_antigravity_sink.sh`](terraform/setup/setup_antigravity_sink.sh). For Cloud Run, `terraform` wires the env and IAM when you set `enable_antigravity=true` (see [`terraform/README.md`](terraform/README.md)).
+
 ## Adding a provider
 
 A provider is a class with a `name` and a `list_agents()` method that returns a list of `Agent` objects. Write the class in `providers.py`, then add it to `registry()` so it gets called. The adapter owns everything specific to its platform: the base URL, how it authenticates, how it pages through results, how it parses the response, and how it builds the open link. Nothing outside the adapter has to change.

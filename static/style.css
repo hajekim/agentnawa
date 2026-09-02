@@ -804,6 +804,25 @@ body {
     font-weight: 600;
 }
 
+.chart-card {
+    background-color: #FFFFFF;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+}
+
+.chart-card h3 {
+    margin: 0 0 1rem;
+    font-size: 1rem;
+}
+
+/* Chart.js needs a bounded-height parent (maintainAspectRatio: false). */
+.chart-wrap {
+    position: relative;
+    height: 300px;
+}
+
 .bar-row {
     display: flex;
     align-items: center;

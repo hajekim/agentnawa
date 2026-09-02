@@ -1,4 +1,5 @@
 import dataclasses
+import os
 import secrets
 
 from fastapi import FastAPI, HTTPException
@@ -70,6 +71,38 @@ async def get_licenses():
             health.append({"name": f"gemini:{pid}", "label": label, "status": "error",
                            "count": 0, "error": str(e)})
     return {"projects": projects, "providers": health}
+
+
+@app.get("/api/antigravity/metrics")
+async def get_antigravity_metrics(days: int = 30):
+    """Antigravity inference usage across connected gemini projects, read from the
+    central BigQuery log sink. Project-scoped (connections sharing a project counted
+    once); unconfigured or empty degrades to zeros, never 500."""
+    days = max(1, min(days, 90))
+    project_ids: list[str] = []
+    seen: set[str] = set()
+    for c in config_store.load():
+        if (c.get("provider") or "gemini") != "gemini":
+            continue
+        pid = c.get("project_id")
+        if pid and pid not in seen:
+            seen.add(pid)
+            project_ids.append(pid)
+    configured = bool(os.getenv("CENTRAL_PROJECT") or os.getenv("ANTIGRAVITY_BQ_PROJECT"))
+    try:
+        usage = providers.list_antigravity_usage(project_ids, days)
+        status, error = "ok", None
+    except Exception as e:
+        usage, status, error = providers._empty_usage(), "error", str(e)
+    if not configured:
+        message = "Antigravity BigQuery가 설정되지 않았습니다 (CENTRAL_PROJECT)."
+    elif not error and usage["summary"]["total_inferences"] == 0:
+        message = "선택한 기간에 Antigravity 로그가 없습니다."
+    else:
+        message = None
+    health = [{"name": "antigravity", "label": "Antigravity", "status": status,
+               "count": usage["summary"]["total_inferences"], "error": error}]
+    return {**usage, "days": days, "message": message, "providers": health}
 
 
 def _normalized_conn(body: dict) -> dict:
