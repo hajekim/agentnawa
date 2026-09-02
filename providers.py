@@ -143,7 +143,7 @@ def _http_get(url: str, headers: dict, params: dict) -> dict:
 
 
 class GeminiProvider:
-    """Google Gemini Enterprise (Discovery Engine) agents for one Agentspace app."""
+    """Google Gemini Enterprise (Discovery Engine) agents for one Gemini Enterprise app."""
 
     def __init__(self, project_id: str, as_app: str, cid: str | None, name: str, label: str):
         self.project_id = project_id

@@ -4,13 +4,13 @@
 
 ## 핵심 결론
 
-`customer`(`customer-project`) 연결의 403은 **IAM이 아니라 크로스-org 경계 인그레스 거부**다. 우리 Cloud Run 호출자는 고객 경계 밖(다른 조직)에 있어 L7 경계에서 `VPC_SERVICE_CONTROLS` / `SECURITY_POLICY_VIOLATED`로 차단된다. IAM 역할은 필요조건이지만 충분조건이 아니다 — 고객 경계에 **우리 서비스 계정을 지정한 인그레스 규칙**이 추가로 있어야 통과한다.
+경계 안 고객사 연결의 403은 **IAM이 아니라 크로스-org 경계 인그레스 거부**다. 우리 Cloud Run 호출자는 고객 경계 밖(다른 조직)에 있어 L7 경계에서 `VPC_SERVICE_CONTROLS` / `SECURITY_POLICY_VIOLATED`로 차단된다. IAM 역할은 필요조건이지만 충분조건이 아니다 — 고객 경계에 **우리 서비스 계정을 지정한 인그레스 규칙**이 추가로 있어야 통과한다.
 
 유일하게 깔끔한 해법: 고객사 조직 Access Context Manager 관리자가 `ingressFrom.identities`에 우리 SA(`serviceAccount:...@our-project`)를 넣는 인그레스 규칙을 추가한다. 크로스-org SA 지정은 공식 지원되는 데이터 교환 경로다. 우리는 이 변경을 대신 할 수 없고, 정확한 입력값(SA 이메일·서비스·메서드·프로젝트 번호)만 제공한다.
 
 **두 개의 게이트(순서대로):**
 1. **IAM / 도메인 제한 공유(DRS).** `iam.allowedPolicyMemberDomains`가 강제되면(2024-05-03 이후 조직 기본 활성) 우리 외부 SA로의 IAM 바인딩 자체가 경계 평가 이전에 차단된다.
-2. **VPC-SC 인그레스 규칙.** 우리가 잡은 customer 403.
+2. **VPC-SC 인그레스 규칙.** 우리가 실제로 관측한 403.
 
 ## 연결 옵션 매트릭스
 

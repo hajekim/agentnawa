@@ -47,7 +47,7 @@ Agents in every state show up, each with a badge for its state (ENABLED, PRIVATE
 
 ## Configuration
 
-You manage connections from the UI. Each connection is one Gemini Enterprise source: a project ID, an Agentspace app ID, an optional client ID (`cid`, used to build each agent's open link), and an optional label. Add, remove, and test connections from the page; the whole list is persisted as one JSON document.
+You manage connections from the UI. Each connection is one Gemini Enterprise source: a project ID, a Gemini Enterprise app ID, an optional client ID (`cid`, used to build each agent's open link), and an optional label. Add, remove, and test connections from the page; the whole list is persisted as one JSON document.
 
 Where that document lives depends on the environment. Locally it is a file, `config.json` by default (override with `CONFIG_PATH`). On Cloud Run set `CONFIG_BUCKET` to a GCS bucket name and the list is stored there as a single blob, `connections.json` by default (override with `CONFIG_OBJECT`).
 

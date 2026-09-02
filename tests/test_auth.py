@@ -11,7 +11,7 @@ import main
 def enabled(monkeypatch):
     """Login enabled: a client id + a domain allowlist."""
     monkeypatch.setattr(main, "OAUTH_CLIENT_ID", "cid.apps.googleusercontent.com")
-    monkeypatch.setattr(main, "ALLOWED_DOMAINS", {"example.com", "google.com"})
+    monkeypatch.setattr(main, "ALLOWED_DOMAINS", {"example.com", "corp.example.com"})
     # don't follow redirects, so we can assert on 302/303 themselves
     return TestClient(main.app, follow_redirects=False)
 
@@ -70,7 +70,7 @@ def test_callback_rejects_other_domain(enabled, monkeypatch):
 
 
 def test_callback_rejects_unverified_email(enabled, monkeypatch):
-    r = _callback(enabled, monkeypatch, "dev@google.com", verified=False)
+    r = _callback(enabled, monkeypatch, "dev@example.com", verified=False)
     assert r.status_code == 403
 
 

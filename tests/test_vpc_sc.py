@@ -1,8 +1,7 @@
 """VPC-SC 403 detection: the _http_get parser must recognize a real perimeter
 denial and extract its fields, while leaving a plain IAM 403 to raise_for_status.
 
-MERLION_403 is the actual body captured from the customer connection
-(customer-project); IAM_403 is synthetic (no real IAM body was captured) —
+VPC_SC_403 is a representative perimeter-denial body; IAM_403 is synthetic —
 it only proves the parser does NOT over-match a same-status PERMISSION_DENIED."""
 import json
 
@@ -11,8 +10,8 @@ import requests
 
 import providers
 
-# Real captured customer 403 (discoveryengine, cross-org VPC-SC ingress denial).
-MERLION_403 = {
+# A VPC-SC 403 (discoveryengine, cross-org ingress denial), fields anonymized.
+VPC_SC_403 = {
     "error": {
         "code": 403,
         "message": ("Request is prohibited by organization's policy. "
@@ -53,8 +52,8 @@ def _resp(body, status=403, text=None):
     return r
 
 
-def test_customer_body_detected():
-    denied = providers._vpc_sc_denied(_resp(MERLION_403))
+def test_vpc_sc_body_detected():
+    denied = providers._vpc_sc_denied(_resp(VPC_SC_403))
     assert isinstance(denied, providers.VpcScDenied)
     assert denied.service == "discoveryengine.googleapis.com"
     assert denied.unique_id == "UID123"
@@ -71,7 +70,7 @@ def test_non_json_body_not_matched():
 
 
 def test_http_get_raises_vpc_sc_before_raise_for_status(monkeypatch):
-    monkeypatch.setattr(providers.requests, "get", lambda *a, **k: _resp(MERLION_403))
+    monkeypatch.setattr(providers.requests, "get", lambda *a, **k: _resp(VPC_SC_403))
     with pytest.raises(providers.VpcScDenied):
         providers._http_get("https://x", {}, {})
 
