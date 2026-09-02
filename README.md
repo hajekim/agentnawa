@@ -2,7 +2,7 @@
 
 Agent Nawa (에이전트 나와) is one place to find and open the AI agents your organization has registered. Different teams build agents on different platforms, and there is usually no single page that lists all of them. Agent Nawa reads those lists through a provider layer and shows them together, so someone looking for an agent does not have to know which platform it was built on.
 
-Today it reads agents from Google Gemini Enterprise (Discovery Engine). The provider layer is where the extensibility lives: each platform is one small adapter that knows its own API, authentication, and links. Adding Microsoft Copilot Studio, Azure AI Foundry, or an in-house platform means writing another adapter, not changing the rest of the app.
+Today it reads agents from Google Gemini Enterprise (Discovery Engine) and Vertex AI Agent Engine, and it goes beyond the list: an **Overview** landing page summarizes your fleet, a **Licenses** page shows Gemini Enterprise seat allocation and utilization, and a **Usage** page reports Antigravity inference telemetry. The provider layer is where the extensibility lives: each platform is one small adapter that knows its own API, authentication, and links. Adding Microsoft Copilot Studio, Azure AI Foundry, or an in-house platform means writing another adapter, not changing the rest of the app.
 
 <img src="docs/overview.png" alt="Agent Nawa — Overview" width="900">
 
@@ -14,8 +14,12 @@ Today it reads agents from Google Gemini Enterprise (Discovery Engine). The prov
     <td width="50%"><img src="docs/agents-cards.png" alt="Agents — card view"><br><sub><b>Card view</b> — the same list as a card grid, one card per agent with its type and state.</sub></td>
   </tr>
   <tr>
+    <td width="50%"><img src="docs/licenses.png" alt="Licenses"><br><sub><b>Licenses</b> — Gemini Enterprise seat allocation per project: assigned, available, and utilization, with a row-click flyout for the full license record.</sub></td>
+    <td width="50%"><img src="docs/usage.png" alt="Usage — Antigravity telemetry"><br><sub><b>Usage</b> — Antigravity inference telemetry: inferences, tokens, active users, a daily trend, a per-project breakdown, and top users.</sub></td>
+  </tr>
+  <tr>
     <td width="50%"><img src="docs/agent-detail.png" alt="Agent detail"><br><sub><b>Detail</b> — the full record for one agent, including any extra provider fields, with a link out to open it in its own platform.</sub></td>
-    <td width="50%"><img src="docs/sources.png" alt="Sources — connection manager"><br><sub><b>Sources</b> — add, edit, delete, and test Gemini Enterprise connections; the status table shows the last fetch per source.</sub></td>
+    <td width="50%"><img src="docs/sources.png" alt="Sources — connection manager"><br><sub><b>Sources</b> — add, edit, delete, and test connections; the status table shows the last fetch per source, with a health dot per connection.</sub></td>
   </tr>
 </table>
 
@@ -23,9 +27,9 @@ Today it reads agents from Google Gemini Enterprise (Discovery Engine). The prov
 
 ## How it works
 
-The backend is FastAPI. Each provider is a class that talks to one platform and returns agents in a shared shape: a name, a description, a type, a state, an icon, and a link to open the agent. `GET /api/agents` calls every registered provider, merges the results, and sorts them by creation time. If one provider throws, the others still return, and the response carries a per-provider status so the page can show which one failed instead of erroring out entirely.
+The backend is FastAPI. Each provider is a class that talks to one platform and returns agents in a shared shape: a name, a description, a type, a state, an icon, and a link to open the agent. `GET /api/agents` calls every registered provider, merges the results, and sorts them by creation time. If one provider throws, the others still return, and the response carries a per-provider status so the page can show which one failed instead of erroring out entirely. A source that fails behind VPC Service Controls is detected specifically and shown with an in-app onboarding guide (see below) rather than a raw error.
 
-The frontend is plain HTML and JavaScript. It loads `/api/agents`, renders one card per agent, and filters on the client as you type in the search box, matching name, description, or type. Each card links out to open the agent in its own platform.
+The frontend is plain HTML and JavaScript, with no build step. It opens on the **Overview**, which rolls up agent counts, license utilization, and usage totals, and from there you drill into Agents, Licenses, or Usage. The Agents list filters on the client as you type, matching name, description, or type, and each card links out to open the agent in its own platform. The page refreshes in the background so the numbers stay current.
 
 Agents in every state show up, each with a badge for its state (ENABLED, PRIVATE, and so on), so nothing is hidden. The Gemini adapter maps each one to a readable type: High Code, Low/No Code, A2A, Workflow, Skill, or Managed.
 
@@ -45,9 +49,21 @@ Agents in every state show up, each with a badge for its state (ENABLED, PRIVATE
    ```
 4. Open http://localhost:8000.
 
+## Signing in
+
+Agent Nawa can gate every request behind Google sign-in (Google Identity Services). It is off by default — with no `OAUTH_CLIENT_ID` set the app is fully open, which is what you want for local development. Set `OAUTH_CLIENT_ID` to a Google OAuth client ID and the app then requires a signed-in Google account for every page and API call; set `ALLOWED_DOMAINS` to restrict which email domains may enter.
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `OAUTH_CLIENT_ID` | no | Google OAuth client ID. Unset ⇒ login is off (open). |
+| `ALLOWED_DOMAINS` | no | Comma-separated allowlist of email domains, e.g. `example.com`. |
+| `SESSION_SECRET` | no | Signs the session cookie. Unset ⇒ a random key, so sessions reset on restart. |
+| `BASE_URL` | no | Public base URL, used to build the sign-in redirect behind a proxy (e.g. Cloud Run). |
+| `HTTPS_ONLY` | no | `true` to mark the session cookie secure. |
+
 ## Configuration
 
-You manage connections from the UI. Each connection is one Gemini Enterprise source: a project ID, a Gemini Enterprise app ID, an optional client ID (`cid`, used to build each agent's open link), and an optional label. Add, remove, and test connections from the page; the whole list is persisted as one JSON document.
+You manage connections from the UI. Each connection points at one agent source — a Gemini Enterprise app or a Vertex AI Agent Engine. A Gemini connection is a project ID, a Gemini Enterprise app ID, an optional client ID (`cid`, used to build each agent's open link), and an optional label. Add, remove, and test connections from the page; the whole list is persisted as one JSON document.
 
 Where that document lives depends on the environment. Locally it is a file, `config.json` by default (override with `CONFIG_PATH`). On Cloud Run set `CONFIG_BUCKET` to a GCS bucket name and the list is stored there as a single blob, `connections.json` by default (override with `CONFIG_OBJECT`).
 
@@ -57,7 +73,7 @@ If no connection is configured, the app still runs and returns an empty list, so
 
 ## Usage telemetry (Antigravity)
 
-The **사용량** tab shows Antigravity inference usage — inferences, tokens, active users, a daily trend chart, per-project breakdown, and top users — for the projects you have connected. It reads a central BigQuery table populated by a Cloud Logging sink (`businessaicode.googleapis.com/inference_response`), scoped to your connected Gemini project IDs. Aggregation happens server-side; the browser only ever receives compact totals, never raw rows.
+The **Usage** tab shows Antigravity inference usage — inferences, tokens, active users, a daily trend chart, a per-project breakdown, and top users — for the projects you have connected. It reads a central BigQuery table populated by a Cloud Logging sink (`businessaicode.googleapis.com/inference_response`), scoped to your connected Gemini project IDs. Aggregation happens server-side; the browser only ever receives compact totals, never raw rows.
 
 It is off until you point it at the central dataset with these env vars:
 
@@ -67,7 +83,17 @@ It is off until you point it at the central dataset with these env vars:
 | `ANTIGRAVITY_BQ_DATASET` | no | `antigravity_monitoring` | Dataset holding the `businessaicode_googleapis_com_inference_response` table. |
 | `ANTIGRAVITY_BQ_LOCATION` | no | client default | BigQuery location of the dataset (e.g. `asia-northeast3`). |
 
-Unset, the tab loads and explains that it is not configured — it never errors. The log sink itself is a one-time, org-admin step (it touches folder/org-level logging): see [`terraform/setup/setup_antigravity_sink.sh`](terraform/setup/setup_antigravity_sink.sh). For Cloud Run, `terraform` wires the env and IAM when you set `enable_antigravity=true` (see [`terraform/README.md`](terraform/README.md)).
+Unset, the tab loads and explains that it is not configured — it never errors, and it shows the exact `gcloud` command an admin needs to run:
+
+<img src="docs/usage-setup.png" alt="Usage — not-configured guide" width="700">
+
+The log sink itself is a one-time, org-admin step (it touches folder/org-level logging): see [`terraform/setup/setup_antigravity_sink.sh`](terraform/setup/setup_antigravity_sink.sh). For Cloud Run, `terraform` wires the env and IAM when you set `enable_antigravity=true` (see [`terraform/README.md`](terraform/README.md)).
+
+## When a source is blocked by VPC Service Controls
+
+If a source sits behind VPC Service Controls, the fetch fails with a specific perimeter-denial error. Agent Nawa detects that case and, instead of a raw error, shows an in-app onboarding guide with the IAM bindings and ingress-policy YAML an administrator needs to let the service account through the perimeter — so the page stays self-service for the people who can actually fix it.
+
+<img src="docs/vpc-sc-guide.png" alt="VPC Service Controls onboarding guide" width="700">
 
 ## Adding a provider
 
