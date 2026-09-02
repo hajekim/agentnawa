@@ -49,6 +49,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
     route();
+    startPolling();
 });
 
 // Show signed-in email + logout in the sidebar. No-op when login is disabled
@@ -215,18 +216,44 @@ async function onRefresh() {
     renderAgents();  // rebuilds tiles + list + filters with the refreshed data
 }
 
+// Auto-refresh: poll the active view's data so status (e.g. VPC-SC onboarding
+// amber -> green, a cleared license 403) updates without a manual refresh. Ticks
+// only when the tab is visible, no detail flyout is open, and the user isn't
+// mid-edit in a form control (so a re-render can't yank focus). Usage view is
+// left out — it refetches only on an explicit day-range change.
+const POLL_MS = 30000;
+function startPolling() {
+    setInterval(pollTick, POLL_MS);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') pollTick();  // snap fresh on return
+    });
+}
+async function pollTick() {
+    if (document.visibilityState !== 'visible' || flyoutTrigger || isEditing()) return;
+    try {
+        if (state.view === 'agents') { await loadAgents(); updateTiles(); updateList(); }
+        else if (state.view === 'licenses') { await loadLicenses(); renderLicenses(); }
+        else if (state.view === 'overview') { await loadAgents(); await loadLicenses(); renderOverview(); }
+    } catch (e) { /* keep current data on failure */ }
+}
+
+// True while the user is typing/selecting in a form control, so a poll re-render
+// doesn't yank focus mid-edit.
+function isEditing() {
+    const el = document.activeElement;
+    return !!el && ['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName);
+}
+
 function updateTiles() {
     const byState = countBy(a => a.state || 'UNKNOWN');
-    const byProv = countBy(providerLabelOf);
-    let html = '';
-    html += tile('total', '', 'Total', allAgents.length, !state.source && !state.state && !state.type && !state.q);
+    let stat = tile('total', '', 'Total', allAgents.length, !state.source && !state.state && !state.type && !state.q);
     for (const s of ['ENABLED', 'PRIVATE']) {
-        if (byState[s] != null) html += tile('state', s, s, byState[s], state.state === s);
+        if (byState[s] != null) stat += tile('state', s, s, byState[s], state.state === s);
     }
-    for (const [p, c] of Object.entries(byProv)) {
-        html += tile('source', p, p, c, state.source === p);
-    }
-    document.getElementById('tiles').innerHTML = `<div class="tiles">${html}</div>`;
+    const chips = providersHealth.map(connChip).join('');
+    document.getElementById('tiles').innerHTML =
+        `<div class="tile-group"><div class="tile-group-label">상태</div><div class="tiles">${stat}</div></div>` +
+        (chips ? `<div class="tile-group"><div class="tile-group-label">커넥션</div><div class="conn-chips">${chips}</div></div>` : '');
 }
 
 function tile(kind, val, label, value, active) {
@@ -236,8 +263,24 @@ function tile(kind, val, label, value, active) {
     </div>`;
 }
 
+// Connection chip: filters by source (like the old source tiles) but is visually a
+// pill, not a number tile, and carries a health dot — green ok / amber VPC-SC
+// onboarding / red error. Built from providersHealth so a connection returning 0
+// agents (e.g. fully VPC-SC blocked) still shows up.
+function connChip(p) {
+    const cls = p.status === 'ok' ? 'ok' : (p.error_type === 'vpc_sc' ? 'pending' : 'err');
+    const tip = p.status === 'ok' ? `${p.label}: 연결됨`
+        : p.error_type === 'vpc_sc' ? `${p.label}: VPC-SC 온보딩 대기` : `${p.label}: 오류`;
+    return `<div class="conn-chip ${state.source === p.label ? 'active' : ''}" role="button" tabindex="0"
+        data-tilekind="source" data-tileval="${escapeHtml(p.label)}" title="${escapeHtml(tip)}">
+        <span class="conn-dot conn-dot--${cls}"></span>
+        <span class="conn-name">${escapeHtml(p.label)}</span>
+        <span class="conn-count">${p.count}</span>
+    </div>`;
+}
+
 function onTileClick(e) {
-    const el = e.target.closest('.tile');
+    const el = e.target.closest('.tile, .conn-chip');
     if (!el) return;
     const kind = el.dataset.tilekind;
     const val = el.dataset.tileval;
@@ -652,7 +695,9 @@ function healthHTML() {
 
 // VPC-SC onboarding guide, shown on Overview ONLY when >=1 connection is blocked
 // by a perimeter. Names the exact identity (runtime SA) the customer's org admin
-// must allow through ingress, plus the concise steps. Full doc: docs/vpc-sc-onboarding.md.
+// must allow through ingress, plus the concise steps. Self-contained: the <details>
+// block inlines the full copy-paste admin procedure so a web visitor never needs the
+// repo's docs/vpc-sc-onboarding.md (the source-of-truth doc for maintainers).
 function vpcScGuideHTML() {
     const blocked = providersHealth.filter(p => p.error_type === 'vpc_sc');
     if (!blocked.length) return '';
@@ -662,6 +707,7 @@ function vpcScGuideHTML() {
         const uid = v.unique_id ? ` · <code>uid: ${escapeHtml(v.unique_id)}</code>` : '';
         return `<li>${escapeHtml(p.label || p.name)}${svc}${uid}</li>`;
     }).join('');
+    const saEmail = serviceAccount ? escapeHtml(serviceAccount) : 'AGENT_NAWA_SA';
     const sa = serviceAccount
         ? `<code>${escapeHtml(serviceAccount)}</code>`
         : '<span class="vpcsc-guide-muted">(관리자에게 문의 — 이 인스턴스의 서비스 계정)</span>';
@@ -677,8 +723,38 @@ function vpcScGuideHTML() {
             <li>dry-run으로 검증 후 enforce로 승격합니다. 완료되면 위 연결이 자동으로 정상 표시됩니다.</li>
         </ol>
         <details class="vpcsc-guide-more">
-            <summary>자세히 / 트러블슈팅</summary>
-            <p>인그레스 규칙은 IAM 역할이 아니라 <strong>메서드</strong>로 지정하고, <code>sources</code>에는 <code>resource:</code> 대신 <code>accessLevel:"*"</code>를 씁니다(우리 egress IP는 마스킹됨). 콘솔의 <strong>위반 분석기</strong>에서 위 <code>uid</code>로 원인을 조회할 수 있습니다. 전체 절차는 저장소의 <code>docs/vpc-sc-onboarding.md</code>를 참고하세요.</p>
+            <summary>자세히 / 관리자용 전체 절차</summary>
+            <p>인그레스 규칙은 IAM 역할이 아니라 <strong>메서드</strong>로 지정하고, <code>sources</code>에는 <code>resource:</code> 대신 <code>accessLevel:"*"</code>를 씁니다(우리 egress IP는 마스킹돼 신원이 유일한 통제축). 아래 <code>PROJECT_ID</code>·<code>PROJECT_NUMBER</code>·<code>PERIMETER</code>·<code>POLICY</code>를 고객사 값으로 바꿔 실행하세요.</p>
+            <p class="vpcsc-guide-step-h">① 대상 프로젝트에 읽기 전용 IAM 부여</p>
+            <pre class="vpcsc-guide-pre">gcloud projects add-iam-policy-binding PROJECT_ID \
+  --member="serviceAccount:${saEmail}" \
+  --role="roles/discoveryengine.viewer" --condition=None
+gcloud projects add-iam-policy-binding PROJECT_ID \
+  --member="serviceAccount:${saEmail}" \
+  --role="roles/aiplatform.viewer" --condition=None</pre>
+            <p class="vpcsc-guide-step-h">② 인그레스 규칙 (<code>agent-nawa-ingress.yaml</code>)</p>
+            <pre class="vpcsc-guide-pre">- ingressFrom:
+    identities:
+      - serviceAccount:${saEmail}
+    sources:
+      - accessLevel: "*"
+  ingressTo:
+    operations:
+      - serviceName: discoveryengine.googleapis.com
+        methodSelectors: [{ method: "*" }]
+      - serviceName: aiplatform.googleapis.com
+        methodSelectors: [{ method: "*" }]
+    resources:
+      - projects/PROJECT_NUMBER</pre>
+            <p class="vpcsc-guide-step-h">③ 병합 → dry-run → enforce</p>
+            <pre class="vpcsc-guide-pre"># --set-ingress-policies는 기존 규칙을 전부 교체하므로 먼저 내보내 병합
+gcloud access-context-manager perimeters describe PERIMETER \
+  --policy=POLICY --format="yaml(status.ingressPolicies)"
+# dry-run 반영 → 포털에서 연결 재확인 → 승격
+gcloud access-context-manager perimeters dry-run update PERIMETER \
+  --policy=POLICY --set-ingress-policies=agent-nawa-ingress.yaml
+gcloud access-context-manager perimeters dry-run enforce PERIMETER --policy=POLICY</pre>
+            <p><strong>트러블슈팅:</strong> 콘솔의 <strong>위반 분석기</strong>(Security → VPC Service Controls)에서 위 <code>uid</code>로 원인을 조회합니다. 흔한 원인 — 잘못된 SA 이메일 · <code>sources</code>가 <code>accessLevel:"*"</code>가 아님 · <code>resources</code>에 이 프로젝트 번호 누락 · VPC-SC가 아닌 <strong>IAM</strong> 사유(경계는 이미 열림, ① 재확인). 도메인 제한 공유(DRS)가 강제되면 ①의 바인딩이 거부될 수 있으니 우리 Customer ID를 먼저 허용 목록에 추가하세요. 외부 SA를 규칙에 넣을 수 없으면 경계 내부 실행(Model B)으로 전환합니다.</p>
         </details>
     </div>`;
 }
@@ -1013,7 +1089,21 @@ async function renderUsage() {
 
 // message is an info banner (not-configured / no-logs); errors surface via usageHealthHTML.
 function usageMessageHTML() {
-    const m = usageState.data.message;
+    const d = usageState.data;
+    // "Not configured" is a deploy-time setting a web viewer can't fix themselves, so
+    // spell out who does it and how instead of showing a bare one-liner.
+    if (d.configured === false) {
+        return `<div class="vpcsc-guide">
+            <h3 class="vpcsc-guide-title">📊 Antigravity 사용량이 아직 연결되지 않았습니다</h3>
+            <p>Antigravity 추론·토큰 사용량은 조직 로그 싱크가 모아둔 <strong>중앙 BigQuery 프로젝트</strong>에서 읽습니다. 이 인스턴스에는 그 프로젝트가 지정돼 있지 않습니다. 이 설정은 <strong>배포 관리자</strong>가 하며, 포털을 보는 사용자가 직접 바꾸는 값이 아닙니다.</p>
+            <p class="vpcsc-guide-step-h">관리자 조치 — Cloud Run 환경 변수 지정</p>
+            <pre class="vpcsc-guide-pre">gcloud run services update agent-nawa \\
+  --region=YOUR_REGION \\
+  --update-env-vars=CENTRAL_PROJECT=YOUR_BQ_PROJECT</pre>
+            <p><code>CENTRAL_PROJECT</code>(또는 <code>ANTIGRAVITY_BQ_PROJECT</code>)에는 Antigravity/Gemini 추론 로그 싱크가 쌓이는 BigQuery 프로젝트 ID를 넣습니다. 런타임 서비스 계정에 해당 데이터셋의 <code>roles/bigquery.dataViewer</code>·<code>roles/bigquery.jobUser</code>가 있어야 합니다. 지정 후 이 화면은 자동으로 사용량을 표시합니다.</p>
+        </div>`;
+    }
+    const m = d.message;
     return m ? `<div class="result-count">${escapeHtml(m)}</div>` : '';
 }
 

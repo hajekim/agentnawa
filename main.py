@@ -259,7 +259,7 @@ async def get_antigravity_metrics(days: int = 30):
         message = None
     health = [{"name": "antigravity", "label": "Antigravity", "status": status,
                "count": usage["summary"]["total_inferences"], "error": error}]
-    return {**usage, "days": days, "message": message, "providers": health}
+    return {**usage, "days": days, "message": message, "configured": configured, "providers": health}
 
 
 def _normalized_conn(body: dict) -> dict:
