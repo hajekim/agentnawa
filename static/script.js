@@ -400,15 +400,26 @@ function extraFieldsHTML(a) {
     return `<details class="raw-fields"><summary>추가 필드</summary><ul class="meta-list">${items}</ul></details>`;
 }
 
+// Fill and reveal the shared #flyout; caller supplies inner HTML that must
+// include a .flyout-close button. Focus capture/restore + trap live here.
+function showFlyout(html) {
+    flyoutTrigger = document.activeElement;  // restore focus here on close
+    const fly = document.getElementById('flyout');
+    fly.innerHTML = html;
+    fly.querySelector('.flyout-close').addEventListener('click', closeFlyout);
+    document.getElementById('flyout-backdrop').hidden = false;
+    fly.hidden = false;
+    fly.setAttribute('aria-hidden', 'false');
+    fly.querySelector('.flyout-close').focus();
+}
+
 function openFlyout(id) {
     const a = allAgents.find(x => x.id === id);
     if (!a) return;
-    flyoutTrigger = document.activeElement;  // restore focus here on close
     const url = safeUrl(a.open_url);
     const type = a.type || 'Unknown';
     const st = a.state || 'UNKNOWN';
-    const fly = document.getElementById('flyout');
-    fly.innerHTML = `
+    showFlyout(`
         <button class="flyout-close" aria-label="닫기">&times;</button>
         <h2>${escapeHtml(a.display_name) || 'Unnamed Agent'}</h2>
         <div class="flyout-badges">
@@ -427,12 +438,7 @@ function openFlyout(id) {
         ${extraFieldsHTML(a)}
         ${url
             ? `<a class="open-primary" href="${escapeHtml(url)}" target="_blank" rel="noopener"><i class="fas fa-up-right-from-square"></i> 열기</a>`
-            : `<span class="open-primary disabled"><i class="fas fa-ban"></i> 열기 링크 없음</span>`}`;
-    fly.querySelector('.flyout-close').addEventListener('click', closeFlyout);
-    document.getElementById('flyout-backdrop').hidden = false;
-    fly.hidden = false;
-    fly.setAttribute('aria-hidden', 'false');
-    fly.querySelector('.flyout-close').focus();
+            : `<span class="open-primary disabled"><i class="fas fa-ban"></i> 열기 링크 없음</span>`}`);
 }
 
 function closeFlyout() {
@@ -780,7 +786,7 @@ function licTableHTML(rows) {
     if (!rows.length) return `<div class="loading">조건에 맞는 라이선스가 없습니다.</div>`;
     const head = LIC_TABLE_COLS.map(col =>
         `<th data-sort="${col.k}" role="button" tabindex="0" aria-sort="${licState.sortKey === col.k ? (licState.sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}">${col.label} <span class="sort-ind">${licState.sortKey === col.k ? (licState.sortDir === 'asc' ? '▲' : '▼') : ''}</span></th>`).join('');
-    const body = rows.map(p => `<tr>
+    const body = rows.map((p, i) => `<tr data-ridx="${i}" role="button" tabindex="0">
         <td class="name-cell">${escapeHtml(p.project_id)}</td>
         <td>${escapeHtml(p.license_config_id)}</td>
         <td>${escapeHtml(licTier(p.subscription_tier))}</td>
@@ -796,11 +802,50 @@ function licTableHTML(rows) {
 
 function onLicTableClick(e) {
     const th = e.target.closest('th[data-sort]');
-    if (!th) return;
-    const k = th.dataset.sort;
-    if (licState.sortKey === k) licState.sortDir = licState.sortDir === 'asc' ? 'desc' : 'asc';
-    else { licState.sortKey = k; licState.sortDir = 'asc'; }
-    updateLicView();
+    if (th) {
+        const k = th.dataset.sort;
+        if (licState.sortKey === k) licState.sortDir = licState.sortDir === 'asc' ? 'desc' : 'asc';
+        else { licState.sortKey = k; licState.sortDir = 'asc'; }
+        updateLicView();
+        return;
+    }
+    const row = e.target.closest('tr[data-ridx]');
+    if (row) openLicenseFlyout(licFiltered()[Number(row.dataset.ridx)]);
+}
+
+// License detail flyout: reuses the shared #flyout; surfaces fields the table
+// omits (connection label, raw state, start date) plus a utilization bar.
+function openLicenseFlyout(p) {
+    if (!p) return;
+    const util = p.utilization_rate || 0;
+    const status = p.status || '';
+    showFlyout(`
+        <button class="flyout-close" aria-label="닫기">&times;</button>
+        <h2>${escapeHtml(p.project_id)}</h2>
+        <div class="flyout-badges">
+            <span class="state-badge lic-${escapeHtml(status.toLowerCase())}">${escapeHtml(status) || '—'}</span>
+            <span class="badge">${escapeHtml(licTier(p.subscription_tier))}</span>
+        </div>
+        <p class="fly-desc">배정 ${(p.assigned_count || 0).toLocaleString()} / 총 ${(p.allocated_seats || 0).toLocaleString()} · 사용률 ${util}%</p>
+        <div class="bar-row">
+            <span class="bar-label">사용률</span>
+            <span class="bar-track"><span class="bar-fill" style="width:${Math.min(100, Math.round(util))}%"></span></span>
+            <span class="bar-count">${util}%</span>
+        </div>
+        <ul class="meta-list">
+            <li><span class="k">Project</span><span class="v">${escapeHtml(p.project_id)}</span></li>
+            <li><span class="k">Config</span><span class="v">${escapeHtml(p.license_config_id) || '—'}</span></li>
+            <li><span class="k">연결</span><span class="v">${escapeHtml(p.label) || '—'}</span></li>
+            <li><span class="k">Tier</span><span class="v">${escapeHtml(licTier(p.subscription_tier))}</span></li>
+            <li><span class="k">State</span><span class="v">${escapeHtml(p.state) || '—'}</span></li>
+            <li><span class="k">Status</span><span class="v">${escapeHtml(status) || '—'}</span></li>
+            <li><span class="k">총 좌석</span><span class="v">${(p.allocated_seats || 0).toLocaleString()}</span></li>
+            <li><span class="k">배정</span><span class="v">${(p.assigned_count || 0).toLocaleString()}</span></li>
+            <li><span class="k">잔여</span><span class="v">${(p.available_count || 0).toLocaleString()}</span></li>
+            <li><span class="k">사용률</span><span class="v">${util}%</span></li>
+            <li><span class="k">시작일</span><span class="v">${escapeHtml(p.start_date) || '—'}</span></li>
+            <li><span class="k">종료일</span><span class="v">${escapeHtml(p.end_date) || '—'}</span></li>
+        </ul>`);
 }
 
 async function onLicRefresh() {
