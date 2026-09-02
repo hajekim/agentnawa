@@ -38,6 +38,12 @@ variable "enable_iap" {
   default     = false
 }
 
+variable "ingress" {
+  description = "Cloud Run ingress override. Empty keeps the default (INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER, or INGRESS_TRAFFIC_ALL when enable_iap). Set INGRESS_TRAFFIC_ALL for public + IAM-authenticated access without IAP."
+  type        = string
+  default     = ""
+}
+
 variable "config_bucket_name" {
   description = "Name of the GCS bucket holding connections.json. Empty computes \"PROJECT-agent-nawa-config\"."
   type        = string

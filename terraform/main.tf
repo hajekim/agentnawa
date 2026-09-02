@@ -28,8 +28,10 @@ locals {
   # The service account reads Gemini agents from the host project plus every
   # connected project, so it needs both roles in each. setproduct keeps the
   # for_each key stable (project:role) regardless of list order.
+  # discoveryengine.editor (not viewer): the v1alpha assistants/.../agents list
+  # call returns a plain IAM 403 with only viewer -- confirmed live 2026-09-02.
   agent_projects = toset(concat([var.project_id], var.connected_project_ids))
-  project_roles  = ["roles/discoveryengine.viewer", "roles/serviceusage.serviceUsageConsumer"]
+  project_roles  = ["roles/discoveryengine.editor", "roles/serviceusage.serviceUsageConsumer"]
   project_role_bindings = {
     for pair in setproduct(local.agent_projects, local.project_roles) :
     "${pair[0]}:${pair[1]}" => { project = pair[0], role = pair[1] }
@@ -121,8 +123,9 @@ resource "google_cloud_run_v2_service" "svc" {
 
   # Network ingress. Default (IAP off) restricts to internal + Cloud Load
   # Balancing traffic. With IAP on, IAP authenticates every request at the edge,
-  # so ingress must accept it; IAP + IAM are then the access control.
-  ingress = var.enable_iap ? "INGRESS_TRAFFIC_ALL" : "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
+  # so ingress must accept it; IAP + IAM are then the access control. var.ingress
+  # overrides this (e.g. INGRESS_TRAFFIC_ALL for public + IAM auth without IAP).
+  ingress = var.ingress != "" ? var.ingress : (var.enable_iap ? "INGRESS_TRAFFIC_ALL" : "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER")
 
   # Enable IAP directly on the service with a Google-managed OAuth client.
   iap_enabled = var.enable_iap

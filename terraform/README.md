@@ -48,16 +48,20 @@ Outputs `service_uri` and `service_account_email`.
 
 Ingress is restricted by default (`INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`), so
 `service_uri` is not reachable from the public internet as-is. Reach it from
-within the VPC, put it behind a load balancer, enable IAP (see below), or relax
-`ingress` in `main.tf` for a quick look.
+within the VPC, put it behind a load balancer, enable IAP (see below), or set
+`-var ingress=INGRESS_TRAFFIC_ALL` for public + IAM-authenticated access.
 
 ## Variables worth setting
 
 - `connected_project_ids` — other projects whose Gemini agents this instance may
-  read. The service account is granted `discoveryengine.viewer` and
-  `serviceusage.serviceUsageConsumer` in each.
+  read. The service account is granted `discoveryengine.editor` and
+  `serviceusage.serviceUsageConsumer` in each. (`editor`, not `viewer`: the
+  v1alpha list-agents call returns an IAM 403 with only `viewer`.)
 - `invoker_members` — who may call the service, e.g. `["group:agents@example.com"]`.
 - `enable_iap` — front the service with Identity-Aware Proxy (default `false`).
+- `ingress` — override Cloud Run ingress. Default is internal-only (or all when
+  `enable_iap`); set `INGRESS_TRAFFIC_ALL` for public + IAM-authenticated access
+  without IAP.
 - `config_bucket_name` — override the default `PROJECT-agent-nawa-config`.
 - `enable_antigravity` — turn on the usage tab (default `false`); see below.
 
