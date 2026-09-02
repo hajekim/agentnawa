@@ -1,5 +1,6 @@
 let allAgents = [];
 let providersHealth = [];
+let serviceAccount = '';    // runtime SA email (from /api/agents), shown in the VPC-SC guide
 let connections = [];       // configured Gemini connections (Sources view)
 let editingId = null;       // connection currently being edited (drives the shared form)
 let flyoutTrigger = null;   // element focus is returned to when the flyout closes
@@ -33,10 +34,12 @@ async function loadAgents() {
     const data = await res.json();
     allAgents = data.agents || [];
     providersHealth = data.providers || [];
+    serviceAccount = data.service_account || '';
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
     bindFlyoutClose();
+    loadUser();
     window.addEventListener('hashchange', route);
     try {
         await loadAgents();
@@ -47,6 +50,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     route();
 });
+
+// Show signed-in email + logout in the sidebar. No-op when login is disabled
+// (auth_enabled false) so the local no-auth build looks unchanged.
+async function loadUser() {
+    try {
+        const me = await (await fetch('/api/me')).json();
+        if (!me.auth_enabled || !me.email) return;
+        const el = document.getElementById('sidebar-user');
+        el.innerHTML = `<span class="sidebar-user-email" title="${escapeHtml(me.email)}">${escapeHtml(me.email)}</span>
+            <a class="sidebar-logout" href="/logout"><i class="fas fa-right-from-bracket"></i> 로그아웃</a>`;
+        el.hidden = false;
+    } catch (e) { /* login disabled or offline: leave the block hidden */ }
+}
 
 /* ---------- helpers ---------- */
 function escapeHtml(s) {
@@ -496,6 +512,7 @@ function renderOverview() {
             ${stat('ovsources', '', 'Sources', providersHealth.length)}
         </div>
         ${healthHTML()}
+        ${vpcScGuideHTML()}
         <div class="breakdown">
             <h3>타입별 분포${state.ovState ? ` · <span class="bk-filter">${escapeHtml(state.ovState)}</span>` : ''}</h3>
             ${barsHTML(byType)}
@@ -631,6 +648,39 @@ function healthHTML() {
     const problems = providersHealth.filter(p => p.status !== 'ok');
     if (!problems.length) return '';
     return `<div class="provider-health">${problems.map(p => healthRow(p, '사용 불가')).join('')}</div>`;
+}
+
+// VPC-SC onboarding guide, shown on Overview ONLY when >=1 connection is blocked
+// by a perimeter. Names the exact identity (runtime SA) the customer's org admin
+// must allow through ingress, plus the concise steps. Full doc: docs/vpc-sc-onboarding.md.
+function vpcScGuideHTML() {
+    const blocked = providersHealth.filter(p => p.error_type === 'vpc_sc');
+    if (!blocked.length) return '';
+    const rows = blocked.map(p => {
+        const v = p.vpc_sc || {};
+        const svc = v.service ? ` · ${escapeHtml(v.service)}` : '';
+        const uid = v.unique_id ? ` · <code>uid: ${escapeHtml(v.unique_id)}</code>` : '';
+        return `<li>${escapeHtml(p.label || p.name)}${svc}${uid}</li>`;
+    }).join('');
+    const sa = serviceAccount
+        ? `<code>${escapeHtml(serviceAccount)}</code>`
+        : '<span class="vpcsc-guide-muted">(관리자에게 문의 — 이 인스턴스의 서비스 계정)</span>';
+    return `<div class="vpcsc-guide">
+        <h3 class="vpcsc-guide-title">🔒 VPC Service Controls 온보딩 가이드</h3>
+        <p>아래 연결은 대상 프로젝트가 VPC-SC 경계 안에 있어 차단됐습니다. Agent Nawa는 경계 밖에서 읽기 때문에, 고객사 조직 관리자가 <strong>우리 서비스 계정을 인그레스 규칙에 허용</strong>해야 정상화됩니다.</p>
+        <ul class="vpcsc-guide-list">${rows}</ul>
+        <p class="vpcsc-guide-sa">허용할 신원(서비스 계정): ${sa}</p>
+        <ol class="vpcsc-guide-steps">
+            <li>위 서비스 계정을 고객사 조직/보안 관리자에게 전달합니다.</li>
+            <li>관리자가 경계 인그레스 규칙에 이 계정을 허용합니다 — <code>sources: accessLevel:"*"</code>, <code>resources: projects/&lt;프로젝트번호&gt;</code>, 대상 서비스는 <code>discoveryengine</code>·<code>aiplatform</code>.</li>
+            <li>대상 프로젝트에 읽기 전용 IAM을 부여합니다 (<code>discoveryengine.viewer</code>·<code>aiplatform.viewer</code>; 에이전트 목록엔 <code>discoveryengine.editor</code>가 필요할 수 있음).</li>
+            <li>dry-run으로 검증 후 enforce로 승격합니다. 완료되면 위 연결이 자동으로 정상 표시됩니다.</li>
+        </ol>
+        <details class="vpcsc-guide-more">
+            <summary>자세히 / 트러블슈팅</summary>
+            <p>인그레스 규칙은 IAM 역할이 아니라 <strong>메서드</strong>로 지정하고, <code>sources</code>에는 <code>resource:</code> 대신 <code>accessLevel:"*"</code>를 씁니다(우리 egress IP는 마스킹됨). 콘솔의 <strong>위반 분석기</strong>에서 위 <code>uid</code>로 원인을 조회할 수 있습니다. 전체 절차는 저장소의 <code>docs/vpc-sc-onboarding.md</code>를 참고하세요.</p>
+        </details>
+    </div>`;
 }
 
 /* ---------- licenses view ---------- */

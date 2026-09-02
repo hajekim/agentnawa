@@ -83,6 +83,31 @@ body {
     text-align: center;
 }
 
+/* signed-in user + logout, pinned to the sidebar bottom (login enabled only) */
+.sidebar-user {
+    margin-top: auto;
+    padding: 0.75rem;
+    border-top: 1px solid var(--sidebar-active);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    font-size: 0.8rem;
+}
+.sidebar-user-email {
+    color: var(--sidebar-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.sidebar-logout {
+    color: var(--sidebar-text);
+    text-decoration: none;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.sidebar-logout:hover { color: #FFFFFF; }
+
 .content {
     flex: 1;
     padding: 2rem 2.5rem;
@@ -645,6 +670,34 @@ body {
 .status-ok { color: #166534; font-weight: 600; }
 .status-error { color: #991B1B; font-weight: 600; }
 .status-vpcsc { color: #92400E; font-weight: 600; }
+
+/* VPC-SC onboarding guide (Overview, only when a perimeter blocks a connection) */
+.vpcsc-guide {
+    background-color: #FFFBEB;
+    color: #92400E;
+    border: 1px solid #FDE68A;
+    border-radius: 0.5rem;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.85rem;
+    line-height: 1.55;
+}
+.vpcsc-guide-title { margin: 0 0 0.5rem; font-size: 0.95rem; }
+.vpcsc-guide p { margin: 0.4rem 0; }
+.vpcsc-guide-list { margin: 0.5rem 0; padding-left: 1.2rem; }
+.vpcsc-guide-sa { font-weight: 600; }
+.vpcsc-guide-steps { margin: 0.5rem 0 0; padding-left: 1.2rem; }
+.vpcsc-guide-steps li { margin: 0.3rem 0; }
+.vpcsc-guide code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background-color: #FEF3C7;
+    padding: 0.05rem 0.3rem;
+    border-radius: 0.25rem;
+    word-break: break-all;
+}
+.vpcsc-guide-muted { color: var(--text-secondary); font-weight: 400; }
+.vpcsc-guide-more { margin-top: 0.6rem; }
+.vpcsc-guide-more summary { cursor: pointer; font-weight: 600; }
 
 /* ----- connection manager (sources) ----- */
 .section-title {
