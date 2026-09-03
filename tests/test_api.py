@@ -207,8 +207,8 @@ def test_antigravity_scope_gemini_only(client, monkeypatch):
     body = client.get("/api/antigravity/metrics").json()
     assert seen["project_ids"] == ["g1"] and seen["days"] == 30  # vertex excluded, default range
     assert body["days"] == 30 and body["providers"][0]["name"] == "antigravity"
-    # configured but no rows -> the no-logs banner (not the unconfigured one)
-    assert body["message"] == "선택한 기간에 Antigravity 로그가 없습니다."
+    # configured but no rows -> the "waiting for first log" banner (not the unconfigured one)
+    assert body["message"].startswith("설정이 완료되었습니다.")
 
 
 def test_antigravity_message_none_with_data(client, monkeypatch):

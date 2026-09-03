@@ -2,6 +2,8 @@
 and the connection->provider registry. All network is monkeypatched out."""
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 import providers
 
 
@@ -281,6 +283,32 @@ def test_list_antigravity_usage_unconfigured(monkeypatch):
 def test_list_antigravity_usage_no_projects(monkeypatch):
     monkeypatch.setenv("CENTRAL_PROJECT", "central")
     assert providers.list_antigravity_usage([]) == providers._empty_usage()
+
+
+def test_list_antigravity_usage_table_not_created_yet(monkeypatch):
+    # forward-only sink: the table exists only after the first log lands, so a missing
+    # table is a benign "waiting for first log" state -> zeros, not an error.
+    monkeypatch.setenv("CENTRAL_PROJECT", "central")
+    monkeypatch.delenv("ANTIGRAVITY_BQ_DATASET", raising=False)
+
+    def fake_run(*a, **k):
+        raise RuntimeError("404 Not found: Table central.antigravity_monitoring."
+                           "businessaicode_googleapis_com_inference_response was not found")
+
+    monkeypatch.setattr(providers, "_run_bq", fake_run)
+    assert providers.list_antigravity_usage(["p1"]) == providers._empty_usage()
+
+
+def test_list_antigravity_usage_other_bq_error_raises(monkeypatch):
+    # a missing dataset / other BigQuery error is a real misconfig -> still raises
+    monkeypatch.setenv("CENTRAL_PROJECT", "central")
+
+    def fake_run(*a, **k):
+        raise RuntimeError("Not found: Dataset central:antigravity_monitoring")
+
+    monkeypatch.setattr(providers, "_run_bq", fake_run)
+    with pytest.raises(RuntimeError):
+        providers.list_antigravity_usage(["p1"])
 
 
 def test_list_antigravity_usage_runs_query(monkeypatch):

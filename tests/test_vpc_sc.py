@@ -77,5 +77,7 @@ def test_http_get_raises_vpc_sc_before_raise_for_status(monkeypatch):
 
 def test_http_get_plain_403_still_raises_httperror(monkeypatch):
     monkeypatch.setattr(providers.requests, "get", lambda *a, **k: _resp(IAM_403))
-    with pytest.raises(requests.HTTPError):
+    with pytest.raises(requests.HTTPError) as ei:
         providers._http_get("https://x", {}, {})
+    # non-VPC-SC 403 now surfaces Google's own actionable message, not the generic one
+    assert "denied on resource" in str(ei.value)

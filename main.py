@@ -254,7 +254,8 @@ async def get_antigravity_metrics(days: int = 30):
     if not configured:
         message = "Antigravity BigQuery가 설정되지 않았습니다 (CENTRAL_PROJECT)."
     elif not error and usage["summary"]["total_inferences"] == 0:
-        message = "선택한 기간에 Antigravity 로그가 없습니다."
+        message = ("설정이 완료되었습니다. 선택한 기간에 Antigravity 추론 로그가 아직 없습니다 "
+                   "— 첫 로그가 쌓이면 자동으로 표시됩니다.")
     else:
         message = None
     health = [{"name": "antigravity", "label": "Antigravity", "status": status,

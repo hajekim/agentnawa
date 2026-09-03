@@ -127,6 +127,19 @@ def _vpc_sc_denied(resp) -> "VpcScDenied | None":
     )
 
 
+def _perm_denied_message(resp) -> str:
+    """Google's own 403 error message. For a plain IAM denial (e.g. the runtime SA
+    lacks serviceusage.services.use on the target project — merlion's cross-org case)
+    it already names the project, the missing role, and a console link, which is far
+    more actionable than requests' generic '403 Client Error: Forbidden'. Empty string
+    if the body isn't a JSON API error, so the caller falls through to raise_for_status.
+    """
+    try:
+        return resp.json().get("error", {}).get("message", "")
+    except ValueError:
+        return ""
+
+
 def _http_get(url: str, headers: dict, params: dict) -> dict:
     for attempt in range(3):
         resp = requests.get(url, headers=headers, params=params, timeout=30)
@@ -137,6 +150,9 @@ def _http_get(url: str, headers: dict, params: dict) -> dict:
             denied = _vpc_sc_denied(resp)
             if denied:
                 raise denied
+            msg = _perm_denied_message(resp)  # non-VPC-SC 403: surface Google's actionable text
+            if msg:
+                raise requests.HTTPError(msg, response=resp)
         resp.raise_for_status()
         return resp.json()
     return {}
@@ -457,15 +473,29 @@ def list_antigravity_usage(project_ids: list[str], days: int = 30) -> dict:
     Reads the central BigQuery inference_response sink table (env CENTRAL_PROJECT /
     ANTIGRAVITY_BQ_DATASET / ANTIGRAVITY_BQ_LOCATION), dedupes by request_id, and
     aggregates. Scope is the caller's project_ids (WHERE project_id IN ...). Returns
-    zeroed aggregates when unconfigured or when the table has no rows; raises on a
-    hard BigQuery error so the caller can surface it as health.
+    zeroed aggregates when unconfigured, when the table has no rows, or when the sink
+    table does not exist yet (forward-only sink, pre-first-log); raises on any other
+    BigQuery error so the caller can surface it as health.
     """
     bq_project, dataset, location = _agy_bq_config()
     if not bq_project or not project_ids:
         return _empty_usage()
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    table_ref = f"{bq_project}.{dataset}.businessaicode_googleapis_com_inference_response"
-    return _aggregate_usage(_run_bq(table_ref, since, project_ids, bq_project, location))
+    table = "businessaicode_googleapis_com_inference_response"
+    table_ref = f"{bq_project}.{dataset}.{table}"
+    try:
+        rows = _run_bq(table_ref, since, project_ids, bq_project, location)
+    except Exception as e:
+        # Forward-only sink: BigQuery creates the table only when the first matching
+        # log lands, so a missing *table* is a benign "waiting for first log" state,
+        # not an outage. A missing *dataset* (real misconfig) or any other error raises.
+        # ponytail: matches on message text — the pragmatic seam; tighten to
+        # google.api_core.exceptions.NotFound if that type is ever guaranteed here.
+        msg = str(e)
+        if table in msg and "not found" in msg.lower():
+            return _empty_usage()
+        raise
+    return _aggregate_usage(rows)
 
 
 def registry() -> list[AgentProvider]:
